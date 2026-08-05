@@ -19,26 +19,77 @@ FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 
 
 class DatasetLoader(ABC):
+    """Abstract interface every dataset loader implements.
+
+    Yields dataset rows normalized to `Example`. Concrete implementations
+    (e.g. `ArcEasyLoader`) are accessed only via the module-level registry
+    (`get_loader`), never imported directly by other modules.
+
+    Attributes:
+        name: Registry name of the dataset (matches the `register` key).
+    """
+
     name: str
 
     @abstractmethod
-    def load(self, split: str, limit: int | None = None) -> Iterator[Example]: ...
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """Yield normalized `Example`s for the given split.
+
+        Args:
+            split: Dataset split to load (e.g. "train", "test", or "fixture"
+                for the bundled offline JSONL fixture).
+            limit: Maximum number of examples to yield, or None for no limit.
+
+        Yields:
+            `Example` instances in source order.
+        """
+        ...
 
 
 _REGISTRY: dict[str, Callable[[], DatasetLoader]] = {}
 
 
 def register(name: str, factory: Callable[[], DatasetLoader]) -> None:
+    """Register a `DatasetLoader` factory under `name` in the module registry.
+
+    Args:
+        name: Dataset key callers will use with `get_loader`.
+        factory: Zero-argument callable that constructs a `DatasetLoader`.
+
+    Side Effects:
+        Mutates the module-level `_REGISTRY` dict.
+    """
     _REGISTRY[name] = factory
 
 
 def get_loader(name: str) -> DatasetLoader:
+    """Look up and construct a registered `DatasetLoader`.
+
+    Args:
+        name: Dataset key previously passed to `register`.
+
+    Returns:
+        A new `DatasetLoader` instance for the given dataset.
+
+    Raises:
+        KeyError: If `name` has no registered factory.
+    """
     if name not in _REGISTRY:
         raise KeyError(f"No loader registered for dataset={name!r}. Known datasets: {sorted(_REGISTRY)}")
     return _REGISTRY[name]()
 
 
 def _load_fixture_jsonl(path: Path, split: str, limit: int | None) -> Iterator[Example]:
+    """Load `Example`s from a bundled offline JSONL fixture file.
+
+    Args:
+        path: Path to the fixture JSONL file, one `Example` per line.
+        split: Split label to pass through (fixtures don't encode their own split).
+        limit: Maximum number of examples to yield, or None for no limit.
+
+    Yields:
+        `Example` instances parsed from the file, in line order.
+    """
     with open(path, encoding="utf-8") as f:
         count = 0
         for line in f:
@@ -64,6 +115,7 @@ class ArcEasyLoader(DatasetLoader):
     name = "arc_easy"
 
     def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
         if split == "fixture":
             yield from _load_fixture_jsonl(FIXTURES_DIR / "arc_easy.jsonl", split, limit)
             return
@@ -80,6 +132,15 @@ class ArcEasyLoader(DatasetLoader):
 
     @staticmethod
     def _to_example(row: dict, split: str) -> Example:
+        """Convert one raw ai2_arc row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from the `allenai/ai2_arc` dataset.
+            split: Split label to record on the resulting `Example`.
+
+        Returns:
+            An `Example` with payload {question, choices, answer_index}.
+        """
         labels = row["choices"]["label"]
         texts = row["choices"]["text"]
         answer_index = labels.index(row["answerKey"])

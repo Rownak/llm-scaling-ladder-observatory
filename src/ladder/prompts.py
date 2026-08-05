@@ -20,6 +20,17 @@ _OPTION_LETTERS = string.ascii_uppercase  # "A".."Z" — enough for any MC bench
 
 
 class PromptVariant(BaseModel):
+    """A versioned prompt template loaded from `prompts/library/`.
+
+    Attributes:
+        id: Identifier for this variant (matches its file path under the library dir).
+        task_family: Evaluation family the template targets.
+        template: The prompt template string, formatted with `str.format` fields.
+        continuation_style: For "mc", whether continuations are option letters
+            or full option text. None for non-"mc" families.
+        num_fewshot: Number of few-shot examples the template expects/embeds.
+    """
+
     id: str
     task_family: Literal["mc", "cloze", "generative"]
     template: str
@@ -28,9 +39,17 @@ class PromptVariant(BaseModel):
 
 
 def load_variant(variant_id: str) -> PromptVariant:
-    """variant_id is a path relative to prompts/library/, without the .yaml suffix.
+    """Load a `PromptVariant` from the prompts library by id.
+
+    variant_id is a path relative to prompts/library/, without the .yaml suffix.
 
     e.g. "arc_easy/mc_letter_v1" -> prompts/library/arc_easy/mc_letter_v1.yaml
+
+    Args:
+        variant_id: Relative path (no .yaml suffix) under `PROMPTS_LIBRARY_DIR`.
+
+    Returns:
+        The parsed and validated `PromptVariant`.
     """
     path = PROMPTS_LIBRARY_DIR / f"{variant_id}.yaml"
     with open(path, encoding="utf-8") as f:
@@ -43,6 +62,16 @@ def render(example: Example, variant: PromptVariant) -> RenderedRequest:
 
     Only `task_family == "mc"` is implemented in Sprint 1 (cloze/generative
     arrive with their evaluators in Sprint 3).
+
+    Args:
+        example: The `Example` to render a prompt for.
+        variant: The `PromptVariant` template/config to render with.
+
+    Returns:
+        A `RenderedRequest` with the formatted prompt and per-option continuations.
+
+    Raises:
+        NotImplementedError: If `variant.task_family` is not "mc".
     """
     if variant.task_family != "mc":
         raise NotImplementedError(f"task_family={variant.task_family!r} arrives in a later sprint")
