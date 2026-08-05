@@ -126,6 +126,7 @@ class DatasetLoader(ABC):
   - Generative (GSM8K): `{question, answer_number}` (number extracted at load time)
   - PPL (WikiText-103 test, fixed C4 validation slice): `{text}` — windowing is the evaluator's job, not the loader's.
 - MMLU uses a fixed 8-subject subset (recorded in the loader) to keep the sweep small; the C4 slice is the first N validation docs with a fixed seed, so results are reproducible.
+- **ARC-Easy label alphabet is not fixed** (Phase 1.3 finding): `allenai/ai2_arc` rows use `choices.label` values of `"A".."D"`, `"A".."C"`, `"A".."E"`, or `"1".."4"` depending on the row, and `choices` can have 3–5 options. `answer_index` must always be computed as `row["choices"]["label"].index(row["answerKey"])` — never via a hardcoded letter→index map. The bundled fixture (`tests/fixtures/arc_easy.jsonl`) deliberately includes one example of each label pattern found in the real test split, so a loader regression that assumes `"A".."D"` fails offline.
 
 ---
 
