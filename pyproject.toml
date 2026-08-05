@@ -29,6 +29,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not slow'"
 markers = [
     "slow: marks tests that require a real HF model download/cache",
     "integration: marks end-to-end integration tests",
