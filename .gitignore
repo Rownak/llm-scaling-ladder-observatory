@@ -222,3 +222,4 @@ sprints/
 execution_logs/
 tasks.md
 CLAUDE.md
+.claude/

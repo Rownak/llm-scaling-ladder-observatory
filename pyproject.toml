@@ -1,0 +1,37 @@
+[project]
+name = "ladder"
+version = "0.1.0"
+description = "Scaling Ladder Eval Observatory"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic==2.8.2",
+    "transformers==4.44.2",
+    "torch==2.4.1",
+    "datasets==2.21.0",
+    "matplotlib==3.9.2",
+    "pyyaml==6.0.2",
+    "typer==0.12.5",
+    "click==8.1.8",  # typer 0.12.5's rich help renderer breaks on click>=8.2
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+]
+
+[project.scripts]
+ladderctl = "ladder.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: marks tests that require a real HF model download/cache",
+    "integration: marks end-to-end integration tests",
+]

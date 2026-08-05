@@ -85,9 +85,13 @@ class RunRecord(BaseModel):
     n_examples: int; seed: int; code_version: str
     config: dict                                # full resolved config
     status: Literal["running", "done", "failed"]
+    started_at: str | None = None               # ISO 8601; set when the run begins
+    finished_at: str | None = None              # ISO 8601; set on "done"/"failed"
 ```
 
 **Invariant: a `RunRecord` contains everything needed to reproduce the run.**
+
+**Phase 1.4 addition:** `started_at`/`finished_at` live on `RunRecord` itself, not as DB-only columns — they're reproducibility/provenance metadata, the same category as `seed`/`code_version`, so `storage.py` persists them verbatim instead of inferring them SQL-side from `status`. Both default to `None`; whichever caller tracks wall-clock timing (CLI `run` command, later the sweep executor) sets them on the record before calling `storage.save_run`.
 
 ---
 
@@ -105,6 +109,8 @@ Three methods because the three eval formats genuinely need different things: su
 - **Registry:** `get_client(name, revision=...)`. No module imports a client class directly; tests of the client itself are the only exception.
 - **`HFClient`** wraps `transformers` with `revision=` for checkpoint selection. Key correctness rule: **continuations are tokenized in context** (tokenize prompt+continuation, subtract prompt token count) — never independently. This is the #1 source of cross-framework mismatch and has a dedicated regression test. `token_nlls` = one forward pass, shift-by-one NLL, context positions masked. fp16 on CUDA, fp32 on CPU. One model loaded at a time; explicit `unload()`.
 - **`DummyClient`** is deterministic from seed + input hash. Every evaluator, the sweep executor, storage, parity, and figures run end-to-end against it with the network disabled — this is both CI and the offline demo path.
+- **model_id → HF repo mapping (Phase 1.2 decision):** the registry hardcodes the Pythia ladder's `model_id` (`"pythia-70m"`, `"pythia-160m"`, `"pythia-410m"`, `"pythia-1b"`) to its full HF Hub repo (`"EleutherAI/pythia-70m"`, etc.) in a module-level dict in `client.py`, via a small factory closure per entry. Callers (CLI, sweep YAML, `RunRecord.model_id`) always use the short `model_id`; only `client.py` knows the HF repo strings. Adding a model to the ladder means adding one dict entry, not touching call sites.
+- **Supporting types** `LoglikResult` (`loglik: float`, `n_tokens: int`), `GenParams` (`max_new_tokens`, `stop`, `temperature`), and `TokenNLLs` (`nlls: list[float]`, `n_bytes: int`) live in `client.py`, not `records.py` — they're client-internal shapes, not part of the storage/reproducibility contract. `Prediction` (in `records.py`) is what persists a client call's result.
 
 ---
 
@@ -124,6 +130,7 @@ class DatasetLoader(ABC):
   - Generative (GSM8K): `{question, answer_number}` (number extracted at load time)
   - PPL (WikiText-103 test, fixed C4 validation slice): `{text}` — windowing is the evaluator's job, not the loader's.
 - MMLU uses a fixed 8-subject subset (recorded in the loader) to keep the sweep small; the C4 slice is the first N validation docs with a fixed seed, so results are reproducible.
+- **ARC-Easy label alphabet is not fixed** (Phase 1.3 finding): `allenai/ai2_arc` rows use `choices.label` values of `"A".."D"`, `"A".."C"`, `"A".."E"`, or `"1".."4"` depending on the row, and `choices` can have 3–5 options. `answer_index` must always be computed as `row["choices"]["label"].index(row["answerKey"])` — never via a hardcoded letter→index map. The bundled fixture (`tests/fixtures/arc_easy.jsonl`) deliberately includes one example of each label pattern found in the real test split, so a loader regression that assumes `"A".."D"` fails offline.
 
 ---
 
