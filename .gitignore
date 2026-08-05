@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Execution
+sprints/
+execution_logs/
+tasks.md
+CLAUDE.md
