@@ -115,7 +115,31 @@ def test_run_record_round_trip():
         code_version="0.1.0",
         config={"limit": 200},
         status="done",
+        started_at="2026-08-05T10:00:00",
+        finished_at="2026-08-05T10:05:00",
     )
+    _round_trip(RunRecord, run)
+
+
+def test_run_record_timestamps_default_to_none():
+    run = RunRecord(
+        run_id="run-1",
+        model_id="pythia-70m",
+        revision="main",
+        dataset="arc_easy",
+        split="test",
+        prompt_variant_id=None,
+        evaluator="loglik_mc",
+        framework="ladder",
+        metrics={},
+        n_examples=0,
+        seed=0,
+        code_version="0.1.0",
+        config={},
+        status="running",
+    )
+    assert run.started_at is None
+    assert run.finished_at is None
     _round_trip(RunRecord, run)
 
 

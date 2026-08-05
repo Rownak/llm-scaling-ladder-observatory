@@ -109,6 +109,9 @@ class RunRecord(BaseModel):
         code_version: Version/commit identifier of the code that produced this run.
         config: Full resolved configuration used to produce this run.
         status: Lifecycle state of the run.
+        started_at: ISO 8601 timestamp when the run began, or None if not yet started.
+        finished_at: ISO 8601 timestamp when the run reached "done"/"failed", or
+            None while still running.
     """
 
     model_config = ConfigDict(protected_namespaces=())
@@ -127,3 +130,5 @@ class RunRecord(BaseModel):
     code_version: str
     config: dict  # full resolved config
     status: Literal["running", "done", "failed"]
+    started_at: str | None = None
+    finished_at: str | None = None

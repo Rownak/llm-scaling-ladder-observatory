@@ -85,9 +85,13 @@ class RunRecord(BaseModel):
     n_examples: int; seed: int; code_version: str
     config: dict                                # full resolved config
     status: Literal["running", "done", "failed"]
+    started_at: str | None = None               # ISO 8601; set when the run begins
+    finished_at: str | None = None              # ISO 8601; set on "done"/"failed"
 ```
 
 **Invariant: a `RunRecord` contains everything needed to reproduce the run.**
+
+**Phase 1.4 addition:** `started_at`/`finished_at` live on `RunRecord` itself, not as DB-only columns — they're reproducibility/provenance metadata, the same category as `seed`/`code_version`, so `storage.py` persists them verbatim instead of inferring them SQL-side from `status`. Both default to `None`; whichever caller tracks wall-clock timing (CLI `run` command, later the sweep executor) sets them on the record before calling `storage.save_run`.
 
 ---
 
