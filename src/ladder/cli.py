@@ -200,6 +200,3 @@ def figures(
     accuracy_bar_chart(runs, out_path)
     typer.echo(f"Wrote {out_path}")
 
-
-if __name__ == "__main__":
-    sys.exit(main())
