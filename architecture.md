@@ -125,11 +125,12 @@ class DatasetLoader(ABC):
 - Registry access, same rule as clients.
 - **Every loader has a two-tier source policy: Hugging Face (cached locally) or the bundled ~20-example JSONL fixture in `tests/fixtures/`.** Tests use fixtures only; a loader without a fixture test does not merge.
 - Normalized payloads per family:
-  - MC (ARC-Easy, HellaSwag, MMLU-subset): `{question, choices, answer_index}`
+  - MC, question-style (ARC-Easy, MMLU-subset): `{question, choices, answer_index}`
+  - MC, context-completion style (HellaSwag): `{context, choices, answer_index}` — HellaSwag's native item is a sentence to complete (`ctx` + `endings`), not a question, so it gets its own payload shape rather than forcing `ctx` into a `question` field. (Phase 2.1 decision; deviates from the original single-shape note in favor of matching the source data and `sprints/sprint2.md`'s literal spec.) `prompts.render` dispatches on which key (`question` vs `context`) is present in the payload to pick the template field.
   - Cloze (LAMBADA, OpenAI variant): `{context, target}`
   - Generative (GSM8K): `{question, answer_number}` (number extracted at load time)
   - PPL (WikiText-103 test, fixed C4 validation slice): `{text}` — windowing is the evaluator's job, not the loader's.
-- MMLU uses a fixed 8-subject subset (recorded in the loader) to keep the sweep small; the C4 slice is the first N validation docs with a fixed seed, so results are reproducible.
+- MMLU uses a fixed 8-subject subset, recorded as a module-level constant (`MMLU_SUBJECTS`) in `datasets.py`, of `cais/mmlu` subject configs; the loader iterates subjects in that fixed order and pools their rows into one stream, tagging each `Example.payload` with `subject` for later breakdown. The C4 slice is the first N validation docs with a fixed seed, so results are reproducible.
 - **ARC-Easy label alphabet is not fixed** (Phase 1.3 finding): `allenai/ai2_arc` rows use `choices.label` values of `"A".."D"`, `"A".."C"`, `"A".."E"`, or `"1".."4"` depending on the row, and `choices` can have 3–5 options. `answer_index` must always be computed as `row["choices"]["label"].index(row["answerKey"])` — never via a hardcoded letter→index map. The bundled fixture (`tests/fixtures/arc_easy.jsonl`) deliberately includes one example of each label pattern found in the real test split, so a loader regression that assumes `"A".."D"` fails offline.
 
 ---
