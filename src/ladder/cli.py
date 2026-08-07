@@ -15,7 +15,7 @@ from ladder.client import get_client
 from ladder.datasets import get_loader
 from ladder.evaluators import loglik_mc
 from ladder.figures import accuracy_bar_chart
-from ladder.metrics import acc
+from ladder.metrics import acc, acc_norm
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
 from ladder.storage import connect, get_example_results, get_run, list_runs, save_example_results, save_run
@@ -103,6 +103,8 @@ def run(
         save_example_results(conn, results)
 
         metrics = {"acc": acc(results)}
+        if evaluator == "loglik_mc":
+            metrics["acc_norm"] = acc_norm(results)
 
         run_record.status = "done"
         run_record.metrics = metrics

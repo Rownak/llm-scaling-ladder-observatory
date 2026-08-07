@@ -43,6 +43,7 @@ def test_run_then_figures_end_to_end(tmp_path):
     assert run_record.dataset == "arc_easy"
     assert run_record.n_examples == 20
     assert "acc" in run_record.metrics
+    assert "acc_norm" in run_record.metrics
     assert run_record.started_at is not None
     assert run_record.finished_at is not None
 
