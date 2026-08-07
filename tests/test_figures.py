@@ -2,6 +2,8 @@
 
 from ladder.figures import (
     PYTHIA_PARAM_COUNTS,
+    _color_for_dataset,
+    _marker_for_model,
     _revision_to_step,
     accuracy_bar_chart,
     scaling_curve_chart,
@@ -150,3 +152,52 @@ def test_trajectory_chart_skips_unparseable_revisions_and_missing_metric(tmp_pat
     trajectory_chart(runs, out_path)
 
     assert out_path.exists()
+
+
+def test_trajectory_chart_renders_full_ladder_without_raising(tmp_path):
+    # 4 models x 3 benchmarks x 3 revisions = 36 lines' worth of points — the
+    # scenario that overflowed matplotlib's default 10-color cycle before
+    # color-by-benchmark/marker-by-model was introduced.
+    out_path = tmp_path / "trajectory.png"
+    runs = [
+        _run(f"r-{model_id}-{dataset}-{revision}", acc=0.3, model_id=model_id, revision=revision, dataset=dataset)
+        for model_id in PYTHIA_PARAM_COUNTS
+        for dataset in ["arc_easy", "hellaswag", "mmlu"]
+        for revision in ["step1000", "step64000", "main"]
+    ]
+
+    trajectory_chart(runs, out_path)
+
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
+
+
+def test_color_for_dataset_is_fixed_for_known_benchmarks():
+    seen = {}
+    assert _color_for_dataset("arc_easy", seen) == "tab:blue"
+    assert _color_for_dataset("hellaswag", seen) == "tab:orange"
+    assert _color_for_dataset("mmlu", seen) == "tab:green"
+    assert seen == {}  # known benchmarks never touch the fallback cache
+
+
+def test_color_for_dataset_assigns_stable_fallback_colors():
+    seen = {}
+    first = _color_for_dataset("gsm8k", seen)
+    second = _color_for_dataset("gsm8k", seen)
+    other = _color_for_dataset("lambada", seen)
+    assert first == second
+    assert other != first
+
+
+def test_marker_for_model_is_fixed_and_distinct_for_the_ladder():
+    seen = {}
+    markers = {_marker_for_model(m, seen) for m in PYTHIA_PARAM_COUNTS}
+    assert len(markers) == len(PYTHIA_PARAM_COUNTS)  # every model gets its own marker
+    assert seen == {}  # known Pythia sizes never touch the fallback cache
+
+
+def test_marker_for_model_assigns_stable_fallback_markers():
+    seen = {}
+    first = _marker_for_model("some-other-model", seen)
+    second = _marker_for_model("some-other-model", seen)
+    assert first == second
