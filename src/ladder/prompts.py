@@ -80,10 +80,15 @@ def render(example: Example, variant: PromptVariant) -> RenderedRequest:
     lettered_choices = "\n".join(
         f"{_OPTION_LETTERS[i]}. {choice}" for i, choice in enumerate(choices)
     )
-    prompt = variant.template.format(
-        question=example.payload["question"],
-        lettered_choices=lettered_choices,
-    )
+    # Question-style payloads (ARC-Easy, MMLU) carry "question"; context-completion
+    # payloads (HellaSwag) carry "context" instead — dispatch on whichever key the
+    # loader populated (architecture.md §4).
+    format_fields = {"lettered_choices": lettered_choices}
+    if "context" in example.payload:
+        format_fields["context"] = example.payload["context"]
+    else:
+        format_fields["question"] = example.payload["question"]
+    prompt = variant.template.format(**format_fields)
 
     if variant.continuation_style == "option_text":
         continuations = [f" {choice}" for choice in choices]

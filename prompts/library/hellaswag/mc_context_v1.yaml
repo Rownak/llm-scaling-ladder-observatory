@@ -1,0 +1,6 @@
+id: hellaswag/mc_context_v1
+task_family: mc
+template: |
+  {context}
+continuation_style: option_text   # full ending text is scored, not a letter
+num_fewshot: 0

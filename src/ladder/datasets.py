@@ -7,6 +7,7 @@ Every loader has a two-tier source policy: Hugging Face (cached locally) or
 the bundled JSONL fixture in `tests/fixtures/`. Tests use fixtures only.
 """
 
+import hashlib
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -157,3 +158,132 @@ class ArcEasyLoader(DatasetLoader):
 
 
 register("arc_easy", ArcEasyLoader)
+
+
+class HellaSwagLoader(DatasetLoader):
+    """HellaSwag (Rowan/hellaswag).
+
+    Normalized MC payload: {context, choices, answer_index}. HellaSwag's
+    native item is a sentence-completion task (`ctx` + `endings`), not a
+    question, so it gets the `context`-keyed payload shape rather than
+    `question` (architecture.md §4) — `prompts.render` dispatches on which
+    key is present.
+    """
+
+    name = "hellaswag"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "hellaswag.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("Rowan/hellaswag", split=split)
+        count = 0
+        for row in ds:
+            if limit is not None and count >= limit:
+                return
+            yield self._to_example(row, split)
+            count += 1
+
+    @staticmethod
+    def _to_example(row: dict, split: str) -> Example:
+        """Convert one raw Rowan/hellaswag row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from the `Rowan/hellaswag` dataset.
+            split: Split label to record on the resulting `Example`.
+
+        Returns:
+            An `Example` with payload {context, choices, answer_index}.
+        """
+        return Example(
+            dataset="hellaswag",
+            split=split,
+            example_id=f"hellaswag-{row['ind']}",
+            payload={
+                "context": row["ctx"],
+                "choices": row["endings"],
+                "answer_index": int(row["label"]),
+            },
+        )
+
+
+register("hellaswag", HellaSwagLoader)
+
+
+# Fixed 8-subject MMLU subset (architecture.md §4) — keeps the sweep small
+# while spanning STEM, humanities, and social-science subjects. Iteration
+# order is fixed so pooled example order is reproducible.
+MMLU_SUBJECTS = [
+    "astronomy",
+    "college_biology",
+    "college_computer_science",
+    "high_school_mathematics",
+    "high_school_world_history",
+    "moral_scenarios",
+    "professional_law",
+    "world_religions",
+]
+
+
+class MmluLoader(DatasetLoader):
+    """MMLU (cais/mmlu), fixed 8-subject subset.
+
+    Normalized MC payload: {question, choices, answer_index, subject}.
+    Pools rows across `MMLU_SUBJECTS` (in that fixed order) into a single
+    stream so the loader interface stays `load(split, limit)` like every
+    other loader; `subject` is kept in the payload for later per-subject
+    breakdowns.
+    """
+
+    name = "mmlu"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "mmlu.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        count = 0
+        for subject in MMLU_SUBJECTS:
+            ds = load_dataset("cais/mmlu", subject, split=split)
+            for row in ds:
+                if limit is not None and count >= limit:
+                    return
+                yield self._to_example(row, split)
+                count += 1
+
+    @staticmethod
+    def _to_example(row: dict, split: str) -> Example:
+        """Convert one raw cais/mmlu row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from a `cais/mmlu` subject config.
+            split: Split label to record on the resulting `Example`.
+
+        Returns:
+            An `Example` with payload {question, choices, answer_index, subject}.
+        """
+        subject = row["subject"]
+        # cais/mmlu rows carry no native row ID; hash the question text for a
+        # stable, reproducible ID (Python's built-in hash() is salted per-process).
+        content_hash = hashlib.sha256(row["question"].encode("utf-8")).hexdigest()[:16]
+        return Example(
+            dataset="mmlu",
+            split=split,
+            example_id=f"mmlu-{subject}-{content_hash}",
+            payload={
+                "question": row["question"],
+                "choices": row["choices"],
+                "answer_index": row["answer"],
+                "subject": subject,
+            },
+        )
+
+
+register("mmlu", MmluLoader)

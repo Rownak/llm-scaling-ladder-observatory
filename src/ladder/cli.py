@@ -14,13 +14,24 @@ from ladder import __version__
 from ladder.client import get_client
 from ladder.datasets import get_loader
 from ladder.evaluators import loglik_mc
-from ladder.figures import accuracy_bar_chart
-from ladder.metrics import acc
+from ladder.figures import accuracy_bar_chart, scaling_curve_chart, trajectory_chart
+from ladder.metrics import acc, acc_norm
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
-from ladder.storage import connect, get_example_results, get_run, list_runs, save_example_results, save_run
+from ladder.storage import (
+    PredictionCache,
+    connect,
+    get_example_results,
+    get_run,
+    list_runs,
+    save_example_results,
+    save_run,
+)
+from ladder.sweep import load_sweep_spec, run_sweep
 
 app = typer.Typer(add_completion=False)
+sweep_app = typer.Typer(add_completion=False, help="Sweep spec execution")
+app.add_typer(sweep_app, name="sweep")
 
 _EVALUATORS = {"loglik_mc": loglik_mc}
 
@@ -97,17 +108,21 @@ def run(
         examples = list(loader.load(split, limit=limit))
         prompt_variant = load_variant(variant)
         client = get_client(model, revision=revision)
+        cache = PredictionCache(conn)
 
         evaluator_fn = _EVALUATORS[evaluator]
-        results = list(evaluator_fn(run_id, examples, prompt_variant, client))
+        results = list(evaluator_fn(run_id, examples, prompt_variant, client, cache, model, revision))
         save_example_results(conn, results)
 
         metrics = {"acc": acc(results)}
+        if evaluator == "loglik_mc":
+            metrics["acc_norm"] = acc_norm(results)
 
         run_record.status = "done"
         run_record.metrics = metrics
         run_record.n_examples = len(results)
         run_record.finished_at = _now_iso()
+        run_record.config = {**run_record.config, "cache_hits": cache.hits, "cache_misses": cache.misses}
         save_run(conn, run_record)
     except Exception as exc:
         run_record.status = "failed"
@@ -118,6 +133,35 @@ def run(
 
     typer.echo(f"run_id: {run_id}")
     typer.echo(f"metrics: {run_record.metrics}")
+
+
+@sweep_app.command("run")
+def sweep_run(
+    spec_path: Path = typer.Argument(..., help="Path to a sweep spec YAML file"),
+    db: Path = typer.Option(Path("./ladder.db"), help="SQLite DB path"),
+) -> None:
+    """Execute a sweep spec, resuming from whatever is already `done` in the DB.
+
+    Runs already `done` for an identical (model, revision, dataset, split,
+    variant, evaluator, limit, seed) are skipped — killing the sweep and
+    rerunning this same command continues without recomputation
+    (architecture.md §8).
+
+    Side Effects:
+        Writes "running"/"done"/"failed" run rows and their example results
+        to `db` for every non-skipped run.
+    """
+    spec = load_sweep_spec(spec_path)
+    conn = connect(db)
+    executed = run_sweep(conn, spec)
+
+    n_failed = sum(1 for r in executed if r.status == "failed")
+    typer.echo(f"Executed {len(executed)} run(s); {n_failed} failed.")
+    for r in executed:
+        typer.echo(f"  {r.run_id}: {r.model_id}/{r.revision} {r.dataset} [{r.status}] {r.metrics}")
+
+    if n_failed > 0:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -196,7 +240,16 @@ def figures(
         raise typer.Exit(code=1)
 
     out_dir.mkdir(parents=True, exist_ok=True)
+
     out_path = out_dir / "accuracy_per_run.png"
     accuracy_bar_chart(runs, out_path)
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "scaling_curve.png"
+    scaling_curve_chart(runs, out_path)
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "trajectory.png"
+    trajectory_chart(runs, out_path)
     typer.echo(f"Wrote {out_path}")
 
