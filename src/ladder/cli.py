@@ -18,7 +18,15 @@ from ladder.figures import accuracy_bar_chart
 from ladder.metrics import acc, acc_norm
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
-from ladder.storage import connect, get_example_results, get_run, list_runs, save_example_results, save_run
+from ladder.storage import (
+    PredictionCache,
+    connect,
+    get_example_results,
+    get_run,
+    list_runs,
+    save_example_results,
+    save_run,
+)
 
 app = typer.Typer(add_completion=False)
 
@@ -97,9 +105,10 @@ def run(
         examples = list(loader.load(split, limit=limit))
         prompt_variant = load_variant(variant)
         client = get_client(model, revision=revision)
+        cache = PredictionCache(conn)
 
         evaluator_fn = _EVALUATORS[evaluator]
-        results = list(evaluator_fn(run_id, examples, prompt_variant, client))
+        results = list(evaluator_fn(run_id, examples, prompt_variant, client, cache, model, revision))
         save_example_results(conn, results)
 
         metrics = {"acc": acc(results)}
@@ -110,6 +119,7 @@ def run(
         run_record.metrics = metrics
         run_record.n_examples = len(results)
         run_record.finished_at = _now_iso()
+        run_record.config = {**run_record.config, "cache_hits": cache.hits, "cache_misses": cache.misses}
         save_run(conn, run_record)
     except Exception as exc:
         run_record.status = "failed"

@@ -44,6 +44,9 @@ def test_run_then_figures_end_to_end(tmp_path):
     assert run_record.n_examples == 20
     assert "acc" in run_record.metrics
     assert "acc_norm" in run_record.metrics
+    # First run against a fresh DB: every continuation is a cache miss, none are hits.
+    assert run_record.config["cache_misses"] > 0
+    assert run_record.config["cache_hits"] == 0
     assert run_record.started_at is not None
     assert run_record.finished_at is not None
 
@@ -58,6 +61,36 @@ def test_run_then_figures_end_to_end(tmp_path):
     png_path = fig_dir / "accuracy_per_run.png"
     assert png_path.exists()
     assert png_path.stat().st_size > 0
+
+
+def test_run_reusing_same_db_hits_prediction_cache(tmp_path):
+    db_path = tmp_path / "ladder.db"
+    args = [
+        "run",
+        "--model", "dummy",
+        "--dataset", "arc_easy",
+        "--variant", "arc_easy/mc_letter_v1",
+        "--evaluator", "loglik_mc",
+        "--split", "fixture",
+        "--db", str(db_path),
+    ]
+
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(app, args)
+    assert second.exit_code == 0, second.output
+
+    conn = connect(db_path)
+    runs = list_runs(conn)
+    assert len(runs) == 2  # two distinct run_ids, same underlying requests
+
+    second_run = runs[1]
+    # Same model/dataset/variant/split as the first run -> every request was
+    # already cached from run 1, so run 2 makes zero new client calls.
+    assert second_run.config["cache_hits"] > 0
+    assert second_run.config["cache_misses"] == 0
+    assert second_run.metrics == runs[0].metrics
 
 
 def test_results_and_show_after_run(tmp_path):

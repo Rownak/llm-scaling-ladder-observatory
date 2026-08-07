@@ -181,7 +181,9 @@ predictions(request_hash PK, model_id, revision, payload_json)
 ```
 
 - Metrics stored as JSON on the run row — simple, and `figures.py`/`parity.py` are the only readers.
-- **Prediction cache:** key = `sha256(model_id | revision | kind | prompt | continuations | gen_params)` over canonical JSON. The executor consults it before every client call, so interrupted sweeps resume with zero recomputation and re-runs are free.
+- **Prediction cache:** key = `sha256(model_id | revision | kind | prompt | continuations | gen_params)` over canonical JSON (`storage.prediction_cache_key`). The executor consults it before every client call, so interrupted sweeps resume with zero recomputation and re-runs are free.
+  - **Phase 2.3 implementation:** `storage.PredictionCache` wraps a connection and exposes `get`/`put`, counting hits/misses on the instance so a run's `config` can record `cache_hits`/`cache_misses` (evaluators don't touch the DB directly). `evaluators.loglik_mc` caches **per continuation**, not per example — each option gets its own single-continuation cache key — so a prompt-variant edit touching only one distractor still reuses the cached score for the untouched options.
+  - `model_id`/`revision` are passed into evaluators as explicit parameters (from the CLI's `--model`/`--revision`), not read off the `ModelClient` instance: `HFClient.model_id` is the internal HF Hub repo string (§3), not the short registry id the cache key (and every other `model_id` in the system) uses.
 - Only `storage.py` writes to the DB; `figures.py` and `parity.py` are read-only.
 
 ---
