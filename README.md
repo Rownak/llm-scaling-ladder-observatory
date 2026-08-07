@@ -16,17 +16,17 @@ An offline-first LLM evaluation system that evaluates a ladder of Pythia checkpo
 
 ## Status
 
-**In progress.** Sprint 1 of 5 is complete; the rest are planned and not yet implemented.
+**In progress.** Sprints 1–2 of 5 are complete; the rest are planned and not yet implemented.
 
 | Sprint | Status | What it adds |
 | --- | --- | --- |
 | 1 — Walking skeleton | Complete | One model, one benchmark, end-to-end: records, clients, loaders, prompts, `loglik_mc`, accuracy, SQLite, CLI, one figure. All downstream interfaces locked. |
-| 2 — Ladder + sweeps | Pending | HellaSwag/MMLU loaders, `acc_norm`, content-hash prediction cache, resumable sweep executor, scaling-curve and trajectory figures. |
+| 2 — Ladder + sweeps | Complete | HellaSwag/MMLU loaders, `acc_norm`, content-hash prediction cache, resumable sweep executor, scaling-curve and trajectory figures. |
 | 3 — Perplexity + formats | Pending | `token_nlls`, sliding-window perplexity with ppl/bpb, cloze (LAMBADA) and generative (GSM8K) evaluators, the headline figure. |
 | 4 — Prompt sensitivity | Pending | Alternative MC variants (letter vs. option-text, instruction line), 5-shot rendering, variant sweep, sensitivity dot plot. |
 | 5 — Parity + report | Pending | lm-eval-harness importer, per-example diff with a fixed discrepancy taxonomy, final findings report. |
 
-Only the Sprint-1 surface described under Quickstart exists today. `ladderctl sweep`, `parity`, and `import` are specified in [architecture.md](architecture.md) but not yet implemented.
+The Sprint 1–2 surface described under Quickstart exists today: single runs, resumable sweeps over the full MC grid, and scaling/trajectory figures. `ladderctl parity` and `import` are specified in [architecture.md](architecture.md) but not yet implemented; `sweeps/main.yaml` has been proven offline (interrupt-and-resume, figure generation) but not yet executed against real Pythia checkpoints on hardware.
 
 ## Quickstart
 
@@ -47,7 +47,7 @@ ladderctl show <run_id> --db ./demo.db      # full reproducibility metadata
 ladderctl figures --db ./demo.db            # writes report/figures/accuracy_per_run.png
 ```
 
-Real hardware — downloads `EleutherAI/pythia-70m` and `allenai/ai2_arc` on first use, runs on CPU or CUDA:
+Single real-hardware run — downloads `EleutherAI/pythia-70m` and `allenai/ai2_arc` on first use, runs on CPU or CUDA:
 
 ```bash
 ladderctl run --model pythia-70m --revision main --dataset arc_easy \
@@ -55,7 +55,42 @@ ladderctl run --model pythia-70m --revision main --dataset arc_easy \
   --limit 200 --db ./ladder.db
 ```
 
-Implemented today: models `dummy`, `pythia-70m`, `pythia-160m`, `pythia-410m`, `pythia-1b`; dataset `arc_easy`; variant `arc_easy/mc_letter_v1`; evaluator `loglik_mc`; metric `acc`.
+Implemented today: models `dummy`, `pythia-70m`, `pythia-160m`, `pythia-410m`, `pythia-1b`; datasets `arc_easy`, `hellaswag`, `mmlu`; evaluator `loglik_mc`; metrics `acc`, `acc_norm`.
+
+### Sprint 2 — resumable sweeps + scaling figures
+
+`sweeps/main.yaml` declares the full ladder grid: 4 model sizes × 3 checkpoints (`step1000`, `step64000`, `main`) × 3 MC benchmarks, capped at 500 examples per run. `ladderctl sweep run` executes it sequentially, one model checkpoint loaded at a time, and **resumes by default** — rerunning the same command against the same DB skips every run already marked `done` and picks up only what's left:
+
+```bash
+ladderctl sweep run sweeps/main.yaml --db ./ladder.db
+# ^ Ctrl-C partway through is safe — rerun the exact same command to resume
+# with zero recomputation on the runs that already finished.
+ladderctl sweep run sweeps/main.yaml --db ./ladder.db
+
+ladderctl results --db ./ladder.db          # one row per (model, revision, dataset) run
+ladderctl figures --db ./ladder.db          # now also writes scaling_curve.png and trajectory.png
+```
+
+`ladderctl figures` writes three PNGs to `report/figures/`: `accuracy_per_run.png` (Sprint 1), `scaling_curve.png` (log-params vs. accuracy per benchmark, at each model's final checkpoint, with chance lines), and `trajectory.png` (accuracy vs. training step, colored by benchmark and marker-coded by model size).
+
+To try the sweep + figures pipeline fully offline (no downloads), point a spec at the `dummy` model and the bundled fixtures:
+
+```bash
+cat > /tmp/demo_sweep.yaml <<'EOF'
+models:
+  - model_id: dummy
+    revisions: [main]
+targets:
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_v1
+    evaluator: loglik_mc
+    split: fixture
+limit: 20
+seed: 0
+EOF
+ladderctl sweep run /tmp/demo_sweep.yaml --db ./demo.db
+ladderctl figures --db ./demo.db
+```
 
 ## Architecture
 
@@ -76,14 +111,15 @@ DatasetLoader → PromptVariant renderer → Evaluator → ModelClient (via cach
 | --- | --- |
 | `records.py` | All Pydantic record types — the locked contract between modules |
 | `client.py` | `ModelClient` ABC + registry + `HFClient` + `DummyClient` |
-| `datasets.py` | `DatasetLoader` ABC + registry + loaders (HF tier / fixture tier) |
+| `datasets.py` | `DatasetLoader` ABC + registry + loaders: ARC-Easy, HellaSwag, MMLU (HF tier / fixture tier) |
 | `prompts.py` | Versioned `PromptVariant` YAML loading + pure renderer |
-| `evaluators.py` | `loglik_mc` today; cloze, generative, perplexity in Sprints 3+ |
-| `metrics.py` | `acc` today; `acc_norm`, ppl/bpb, answer extraction later |
-| `storage.py` | SQLite schema, run/result CRUD, prediction cache. The only writer |
-| `figures.py` | matplotlib figures, read-only against the DB |
+| `evaluators.py` | `loglik_mc` today; cloze, generative, perplexity in Sprint 3+ |
+| `metrics.py` | `acc`, `acc_norm` today; ppl/bpb, answer extraction later |
+| `storage.py` | SQLite schema, run/result CRUD, content-hash prediction cache. The only writer |
+| `sweep.py` | Sweep spec expansion + resumable sequential executor, grouped by (model, revision) |
+| `figures.py` | matplotlib figures (accuracy bar, scaling curve, trajectory), read-only against the DB |
 | `cli.py` | `ladderctl` |
-| `sweep.py`, `parity.py` | Sweep executor and harness parity — not yet implemented |
+| `parity.py` | Harness parity — not yet implemented (Sprint 5) |
 
 See [architecture.md](architecture.md) for record schemas, the storage schema, and the invariants checklist.
 
@@ -92,7 +128,8 @@ See [architecture.md](architecture.md) for record schemas, the storage schema, a
 - **Bits-per-byte is the canonical cross-model metric.** Raw perplexity is reported per-model only — it isn't comparable across models with different tokenizers.
 - **Continuations are tokenized in context** (tokenize prompt+continuation, subtract the prompt token count) rather than independently. This is the single largest source of cross-framework accuracy mismatch, and it has a dedicated regression test.
 - **Prompt variants are versioned YAML files, never inline strings.** Editing a template bumps the version and the old file stays, so a stored run always resolves to the exact prompt it used.
-- **Predictions are cached under a content hash** of (model, revision, kind, prompt, continuations, gen_params), which makes interrupted sweeps resume with zero recomputation and re-runs free. *(Schema exists in Sprint 1; cache logic lands in Sprint 2.)*
+- **Predictions are cached under a content hash** of (model, revision, kind, prompt, continuations, gen_params), which makes interrupted sweeps resume with zero recomputation and re-runs free.
+- **Sweep resume is config-based, not run-id-based.** Every `sweep run` invocation mints fresh run ids, so "already done" is decided by matching (model, revision, dataset, split, variant, evaluator, limit, seed) against existing `done` rows — killing a sweep and rerunning the same command is the whole resume story, no separate flag.
 - **A `RunRecord` contains everything needed to reproduce its run** — config, seed, code version, prompt variant id, timestamps.
 - **The entire default test suite runs offline** against a deterministic `DummyClient` and bundled JSONL fixtures.
 
@@ -103,7 +140,7 @@ pytest                  # default suite: offline, no network, no API keys
 pytest -m slow          # tokenizer-boundary regression on a tiny HF model (downloads once)
 ```
 
-The default suite is 59 tests and passes on a network-disabled machine — no downloads, no credentials. Anything touching a real model is gated behind the `slow` marker and deselected by default. Every metric has a hand-computed fixture test; every dataset loader has a bundled ~20-example JSONL fixture and works from it with the network off.
+The default suite is 111 tests and passes on a network-disabled machine — no downloads, no credentials. Anything touching a real model is gated behind the `slow` marker and deselected by default. Every metric has a hand-computed fixture test; every dataset loader has a bundled ~20-example JSONL fixture and works from it with the network off; the sweep executor has a dedicated interrupt-and-resume test asserting zero recomputation via cache-hit accounting.
 
 ## Roadmap / future work
 
