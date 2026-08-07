@@ -125,11 +125,12 @@ class DatasetLoader(ABC):
 - Registry access, same rule as clients.
 - **Every loader has a two-tier source policy: Hugging Face (cached locally) or the bundled ~20-example JSONL fixture in `tests/fixtures/`.** Tests use fixtures only; a loader without a fixture test does not merge.
 - Normalized payloads per family:
-  - MC (ARC-Easy, HellaSwag, MMLU-subset): `{question, choices, answer_index}`
+  - MC, question-style (ARC-Easy, MMLU-subset): `{question, choices, answer_index}`
+  - MC, context-completion style (HellaSwag): `{context, choices, answer_index}` — HellaSwag's native item is a sentence to complete (`ctx` + `endings`), not a question, so it gets its own payload shape rather than forcing `ctx` into a `question` field. (Phase 2.1 decision; deviates from the original single-shape note in favor of matching the source data and `sprints/sprint2.md`'s literal spec.) `prompts.render` dispatches on which key (`question` vs `context`) is present in the payload to pick the template field.
   - Cloze (LAMBADA, OpenAI variant): `{context, target}`
   - Generative (GSM8K): `{question, answer_number}` (number extracted at load time)
   - PPL (WikiText-103 test, fixed C4 validation slice): `{text}` — windowing is the evaluator's job, not the loader's.
-- MMLU uses a fixed 8-subject subset (recorded in the loader) to keep the sweep small; the C4 slice is the first N validation docs with a fixed seed, so results are reproducible.
+- MMLU uses a fixed 8-subject subset, recorded as a module-level constant (`MMLU_SUBJECTS`) in `datasets.py`, of `cais/mmlu` subject configs; the loader iterates subjects in that fixed order and pools their rows into one stream, tagging each `Example.payload` with `subject` for later breakdown. The C4 slice is the first N validation docs with a fixed seed, so results are reproducible.
 - **ARC-Easy label alphabet is not fixed** (Phase 1.3 finding): `allenai/ai2_arc` rows use `choices.label` values of `"A".."D"`, `"A".."C"`, `"A".."E"`, or `"1".."4"` depending on the row, and `choices` can have 3–5 options. `answer_index` must always be computed as `row["choices"]["label"].index(row["answerKey"])` — never via a hardcoded letter→index map. The bundled fixture (`tests/fixtures/arc_easy.jsonl`) deliberately includes one example of each label pattern found in the real test split, so a loader regression that assumes `"A".."D"` fails offline.
 
 ---
@@ -180,7 +181,9 @@ predictions(request_hash PK, model_id, revision, payload_json)
 ```
 
 - Metrics stored as JSON on the run row — simple, and `figures.py`/`parity.py` are the only readers.
-- **Prediction cache:** key = `sha256(model_id | revision | kind | prompt | continuations | gen_params)` over canonical JSON. The executor consults it before every client call, so interrupted sweeps resume with zero recomputation and re-runs are free.
+- **Prediction cache:** key = `sha256(model_id | revision | kind | prompt | continuations | gen_params)` over canonical JSON (`storage.prediction_cache_key`). The executor consults it before every client call, so interrupted sweeps resume with zero recomputation and re-runs are free.
+  - **Phase 2.3 implementation:** `storage.PredictionCache` wraps a connection and exposes `get`/`put`, counting hits/misses on the instance so a run's `config` can record `cache_hits`/`cache_misses` (evaluators don't touch the DB directly). `evaluators.loglik_mc` caches **per continuation**, not per example — each option gets its own single-continuation cache key — so a prompt-variant edit touching only one distractor still reuses the cached score for the untouched options.
+  - `model_id`/`revision` are passed into evaluators as explicit parameters (from the CLI's `--model`/`--revision`), not read off the `ModelClient` instance: `HFClient.model_id` is the internal HF Hub repo string (§3), not the short registry id the cache key (and every other `model_id` in the system) uses.
 - Only `storage.py` writes to the DB; `figures.py` and `parity.py` are read-only.
 
 ---
@@ -190,6 +193,11 @@ predictions(request_hash PK, model_id, revision, payload_json)
 - The spec YAML declares axes (models×revisions, eval targets, variants, example cap) and expands deterministically into a run list.
 - Executor is **sequential**, grouped by (model_id, revision) so each checkpoint is loaded once, all its runs executed, then unloaded — peak memory is one model. A failed run is marked `failed` and the sweep continues; `ladderctl sweep run` re-executes only non-`done` runs (resume is the default behavior, not a separate mode).
 - Rough budget check (do this before running): ~12 model points × 7 targets × ≤500 examples ≈ 40k examples total; the 1B model is the long pole. If the first full sweep exceeds an overnight run, cut example caps, not benchmarks.
+- **Phase 2.4 implementation:**
+  - `SweepSpec` (`models: list[SweepModel]`, `targets: list[SweepTarget]`, `limit`, `seed`) is the YAML schema. `expand_sweep` walks models (outer) × that model's revisions × targets (inner), in file order — this nesting is what makes the executor's (model_id, revision) grouping *contiguous by construction*, so `run_sweep` never needs to sort or re-group.
+  - **Resume matching is config-based, not `run_id`-based**: since every execution mints a fresh `run_id`, "already done" is decided by `_sweep_run_key` — the tuple `(model_id, revision, dataset, split, prompt_variant_id, evaluator, config["limit"], seed)` — checked against every `status == "done"` row already in the DB before a `SweepRun` executes. A run matching an existing `done` row is skipped with zero client calls and zero new rows; this is orthogonal to (and layered on top of) the per-request `PredictionCache`, which still applies within any run that *does* execute.
+  - `run_sweep(conn, spec, evaluators=None)` takes an optional evaluator-name→function map (defaults to the real registry, `{"loglik_mc": loglik_mc}`) purely so tests can substitute without touching the module import graph; production callers (the CLI) never pass it.
+  - The executor reuses `cli.run`'s single-run pipeline logic (load → render/score → aggregate → persist) via a private `_execute_one`, rather than the CLI command calling into `sweep.py`'s runner — `ladderctl sweep run sweeps/main.yaml` is a thin wrapper that loads the spec, calls `run_sweep`, and prints a per-run summary line + a nonzero exit if any run failed.
 
 ---
 
@@ -212,6 +220,15 @@ predictions(request_hash PK, model_id, revision, payload_json)
 
 `report/findings.md` is written by hand, embeds these figures, and includes a future-work section (Paloma per-domain PPL, OLMo suite, dashboard, third framework) — the interview answer to "what would you do next."
 
+- **Phase 2.5 implementation** (`scaling_curve_chart`, `trajectory_chart` in `figures.py`; MC benchmarks only — bpb's twin axis waits for Sprint 3's perplexity evaluator):
+  - `PYTHIA_PARAM_COUNTS` (module-level dict, `figures.py`) is the single source of truth for param counts on the x-axis — deliberately *not* added to `client.py`'s model registry, since the registry's job is resolving `model_id` to an HF repo (§3), an orthogonal concern from plotting.
+  - `_revision_to_step` parses `"step<N>"` labels via regex and maps the literal string `"main"` to a hardcoded `_FINAL_STEP = 143_000` (Pythia's published final checkpoint step) — both figures skip (not error on) any run whose revision doesn't match either form, so a future non-Pythia model_id in the DB degrades gracefully instead of crashing figure generation.
+  - `scaling_curve_chart` only plots runs at the final checkpoint (`_revision_to_step(r.revision) == _FINAL_STEP`) — one point per (model, dataset) at the ladder's endpoint, matching "log-params vs. accuracy for all benchmarks" from architecture.md's original design. `trajectory_chart` is the complementary view: plots every parseable revision, one line per (model, dataset) pair, x-axis is training step.
+  - `_CHANCE_RATE` is a small fixed dict keyed by dataset (`arc_easy`/`hellaswag`/`mmlu` → 0.25, all 4-choice MC in the Sprint-2 grid); `scaling_curve_chart` draws one dashed chance line per benchmark that has an entry, color-matched to that benchmark's line. Not generalized beyond MC yet — PPL/GSM8K have no "chance" concept in the same sense.
+  - Both functions accept `metric: str = "acc"` so `acc_norm` can be plotted by passing `metric="acc_norm"`; the CLI's `figures` command currently only calls the `acc` variant (Phase 2.2's acc/acc_norm divergence-as-a-finding is future report material, not wired into the CLI's default figure set yet).
+  - `ladderctl figures` now writes three files unconditionally: `accuracy_per_run.png` (Sprint 1's bar chart, kept for now), `scaling_curve.png`, `trajectory.png`.
+  - **Color/marker encoding is fixed, not a default cycler.** `trajectory_chart` plots up to 4 models × 3+ benchmarks (12+ lines); matplotlib's default color cycle only has 10 entries and starts silently reusing colors past that, making lines indistinguishable. Line color is assigned by benchmark (`_color_for_dataset`, fixed `_DATASET_COLORS` for the known Sprint-2 benchmarks, a small fallback cycle for anything else) and marker shape by model size (`_marker_for_model`, fixed `_MODEL_MARKERS` ordered smallest-to-largest Pythia size, same fallback pattern). `scaling_curve_chart` reuses `_color_for_dataset` too, so a benchmark's color is consistent across both figures. `trajectory_chart` renders two separate legends (`ax.add_artist` to keep both), one for the color→benchmark mapping and one for the marker→model mapping, rather than one combined "model/dataset" legend entry per line.
+
 ---
 
 ## 11. CLI (`cli.py` → `ladderctl`)
@@ -219,7 +236,7 @@ predictions(request_hash PK, model_id, revision, payload_json)
 ```
 ladderctl run      --model pythia-160m --revision step143000 --dataset arc_easy \
                    --variant arc_easy/mc_letter_v1 --evaluator loglik_mc [--limit N]
-ladderctl sweep run sweeps/main.yaml          # resumable by default
+ladderctl sweep run sweeps/main.yaml [--db ./ladder.db]   # resumable by default
 ladderctl results  [--dataset ...] [--model ...]
 ladderctl show     <run_id>
 ladderctl parity   <run_id_a> <run_id_b> [--report out.md]

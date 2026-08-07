@@ -1,0 +1,8 @@
+id: mmlu/mc_letter_v1
+task_family: mc
+template: |
+  Question: {question}
+  {lettered_choices}
+  Answer:
+continuation_style: letter      # letter (" A".." D") | option_text (full option strings)
+num_fewshot: 0
