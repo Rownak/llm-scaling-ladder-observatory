@@ -1,0 +1,35 @@
+# The one sweep spec for the project (architecture.md §8, sprints/sprint2.md Phase 2.4).
+#
+# Axes: 4 Pythia sizes x 3 revisions (early/mid/final checkpoint) x 3 MC
+# benchmarks x 1 prompt variant each, capped at 500 examples per run.
+# ~12 model points x 3 targets x <=500 examples ~= 18k examples total.
+#
+# step1000/step64000 are revision tags published for every model in the
+# EleutherAI Pythia suite; "main" resolves to the final (step143000) checkpoint.
+
+models:
+  - model_id: pythia-70m
+    revisions: [step1000, step64000, main]
+  - model_id: pythia-160m
+    revisions: [step1000, step64000, main]
+  - model_id: pythia-410m
+    revisions: [step1000, step64000, main]
+  - model_id: pythia-1b
+    revisions: [step1000, step64000, main]
+
+targets:
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_v1
+    evaluator: loglik_mc
+    split: test
+  - dataset: hellaswag
+    variant: hellaswag/mc_context_v1
+    evaluator: loglik_mc
+    split: validation
+  - dataset: mmlu
+    variant: mmlu/mc_letter_v1
+    evaluator: loglik_mc
+    split: test
+
+limit: 500
+seed: 0

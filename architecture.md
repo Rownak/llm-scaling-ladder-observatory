@@ -193,6 +193,11 @@ predictions(request_hash PK, model_id, revision, payload_json)
 - The spec YAML declares axes (models×revisions, eval targets, variants, example cap) and expands deterministically into a run list.
 - Executor is **sequential**, grouped by (model_id, revision) so each checkpoint is loaded once, all its runs executed, then unloaded — peak memory is one model. A failed run is marked `failed` and the sweep continues; `ladderctl sweep run` re-executes only non-`done` runs (resume is the default behavior, not a separate mode).
 - Rough budget check (do this before running): ~12 model points × 7 targets × ≤500 examples ≈ 40k examples total; the 1B model is the long pole. If the first full sweep exceeds an overnight run, cut example caps, not benchmarks.
+- **Phase 2.4 implementation:**
+  - `SweepSpec` (`models: list[SweepModel]`, `targets: list[SweepTarget]`, `limit`, `seed`) is the YAML schema. `expand_sweep` walks models (outer) × that model's revisions × targets (inner), in file order — this nesting is what makes the executor's (model_id, revision) grouping *contiguous by construction*, so `run_sweep` never needs to sort or re-group.
+  - **Resume matching is config-based, not `run_id`-based**: since every execution mints a fresh `run_id`, "already done" is decided by `_sweep_run_key` — the tuple `(model_id, revision, dataset, split, prompt_variant_id, evaluator, config["limit"], seed)` — checked against every `status == "done"` row already in the DB before a `SweepRun` executes. A run matching an existing `done` row is skipped with zero client calls and zero new rows; this is orthogonal to (and layered on top of) the per-request `PredictionCache`, which still applies within any run that *does* execute.
+  - `run_sweep(conn, spec, evaluators=None)` takes an optional evaluator-name→function map (defaults to the real registry, `{"loglik_mc": loglik_mc}`) purely so tests can substitute without touching the module import graph; production callers (the CLI) never pass it.
+  - The executor reuses `cli.run`'s single-run pipeline logic (load → render/score → aggregate → persist) via a private `_execute_one`, rather than the CLI command calling into `sweep.py`'s runner — `ladderctl sweep run sweeps/main.yaml` is a thin wrapper that loads the spec, calls `run_sweep`, and prints a per-run summary line + a nonzero exit if any run failed.
 
 ---
 
@@ -222,7 +227,7 @@ predictions(request_hash PK, model_id, revision, payload_json)
 ```
 ladderctl run      --model pythia-160m --revision step143000 --dataset arc_easy \
                    --variant arc_easy/mc_letter_v1 --evaluator loglik_mc [--limit N]
-ladderctl sweep run sweeps/main.yaml          # resumable by default
+ladderctl sweep run sweeps/main.yaml [--db ./ladder.db]   # resumable by default
 ladderctl results  [--dataset ...] [--model ...]
 ladderctl show     <run_id>
 ladderctl parity   <run_id_a> <run_id_b> [--report out.md]

@@ -27,8 +27,11 @@ from ladder.storage import (
     save_example_results,
     save_run,
 )
+from ladder.sweep import load_sweep_spec, run_sweep
 
 app = typer.Typer(add_completion=False)
+sweep_app = typer.Typer(add_completion=False, help="Sweep spec execution")
+app.add_typer(sweep_app, name="sweep")
 
 _EVALUATORS = {"loglik_mc": loglik_mc}
 
@@ -130,6 +133,35 @@ def run(
 
     typer.echo(f"run_id: {run_id}")
     typer.echo(f"metrics: {run_record.metrics}")
+
+
+@sweep_app.command("run")
+def sweep_run(
+    spec_path: Path = typer.Argument(..., help="Path to a sweep spec YAML file"),
+    db: Path = typer.Option(Path("./ladder.db"), help="SQLite DB path"),
+) -> None:
+    """Execute a sweep spec, resuming from whatever is already `done` in the DB.
+
+    Runs already `done` for an identical (model, revision, dataset, split,
+    variant, evaluator, limit, seed) are skipped — killing the sweep and
+    rerunning this same command continues without recomputation
+    (architecture.md §8).
+
+    Side Effects:
+        Writes "running"/"done"/"failed" run rows and their example results
+        to `db` for every non-skipped run.
+    """
+    spec = load_sweep_spec(spec_path)
+    conn = connect(db)
+    executed = run_sweep(conn, spec)
+
+    n_failed = sum(1 for r in executed if r.status == "failed")
+    typer.echo(f"Executed {len(executed)} run(s); {n_failed} failed.")
+    for r in executed:
+        typer.echo(f"  {r.run_id}: {r.model_id}/{r.revision} {r.dataset} [{r.status}] {r.metrics}")
+
+    if n_failed > 0:
+        raise typer.Exit(code=1)
 
 
 @app.command()

@@ -181,3 +181,41 @@ def test_figures_empty_db_exits_nonzero(tmp_path):
     db_path = tmp_path / "ladder.db"
     result = runner.invoke(app, ["figures", "--db", str(db_path), "--out-dir", str(tmp_path / "figs")])
     assert result.exit_code != 0
+
+
+def test_sweep_run_then_resume_via_cli(tmp_path):
+    db_path = tmp_path / "ladder.db"
+    spec_path = tmp_path / "spec.yaml"
+    spec_path.write_text(
+        """
+models:
+  - model_id: dummy
+    revisions: [main]
+targets:
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_v1
+    evaluator: loglik_mc
+    split: fixture
+limit: 5
+seed: 0
+""",
+        encoding="utf-8",
+    )
+
+    first = runner.invoke(app, ["sweep", "run", str(spec_path), "--db", str(db_path)])
+    assert first.exit_code == 0, first.output
+    assert "Executed 1 run(s); 0 failed." in first.output
+
+    conn = connect(db_path)
+    runs = list_runs(conn)
+    assert len(runs) == 1
+    assert runs[0].status == "done"
+
+    # Rerunning the identical spec against the same DB resumes: the one run
+    # is already `done`, so nothing new executes and no duplicate row appears.
+    second = runner.invoke(app, ["sweep", "run", str(spec_path), "--db", str(db_path)])
+    assert second.exit_code == 0, second.output
+    assert "Executed 0 run(s); 0 failed." in second.output
+
+    runs = list_runs(conn)
+    assert len(runs) == 1
