@@ -14,7 +14,7 @@ from ladder import __version__
 from ladder.client import get_client
 from ladder.datasets import get_loader
 from ladder.evaluators import loglik_mc
-from ladder.figures import accuracy_bar_chart
+from ladder.figures import accuracy_bar_chart, scaling_curve_chart, trajectory_chart
 from ladder.metrics import acc, acc_norm
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
@@ -240,7 +240,16 @@ def figures(
         raise typer.Exit(code=1)
 
     out_dir.mkdir(parents=True, exist_ok=True)
+
     out_path = out_dir / "accuracy_per_run.png"
     accuracy_bar_chart(runs, out_path)
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "scaling_curve.png"
+    scaling_curve_chart(runs, out_path)
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "trajectory.png"
+    trajectory_chart(runs, out_path)
     typer.echo(f"Wrote {out_path}")
 

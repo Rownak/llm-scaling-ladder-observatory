@@ -7,9 +7,14 @@ Offline throughout (DummyClient + the ARC-Easy fixture), exercised via
 from typer.testing import CliRunner
 
 from ladder.cli import app
+from ladder.client import DummyClient, register
 from ladder.storage import connect, get_example_results, list_runs
 
 runner = CliRunner()
+
+# A second DummyClient registration so the mini-sweep test (below) can exercise
+# a real 2-model axis without touching HFClient/real downloads.
+register("dummy2", lambda revision="main", **kwargs: DummyClient(revision=revision, model_id="dummy2", **kwargs))
 
 
 def test_run_then_figures_end_to_end(tmp_path):
@@ -219,3 +224,56 @@ seed: 0
 
     runs = list_runs(conn)
     assert len(runs) == 1
+
+
+def test_mini_sweep_then_figures_render_from_db(tmp_path):
+    """Sprint 2 Phase 2.5 integration test: 2 models x 2 revisions x 2 datasets, cap 10.
+
+    DummyClient stands in for both model axes ("dummy"/"dummy2" are both
+    registered, architecture.md §3) since the offline suite never touches
+    real Pythia checkpoints; the point is proving `sweep run` -> `figures`
+    renders scaling + trajectory PNGs from the DB alone, not real scaling
+    behavior.
+    """
+    db_path = tmp_path / "ladder.db"
+    fig_dir = tmp_path / "figures"
+    spec_path = tmp_path / "mini_sweep.yaml"
+    spec_path.write_text(
+        """
+models:
+  - model_id: dummy
+    revisions: [step1000, main]
+  - model_id: dummy2
+    revisions: [step1000, main]
+targets:
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_v1
+    evaluator: loglik_mc
+    split: fixture
+  - dataset: hellaswag
+    variant: hellaswag/mc_context_v1
+    evaluator: loglik_mc
+    split: fixture
+limit: 10
+seed: 0
+""",
+        encoding="utf-8",
+    )
+
+    sweep_result = runner.invoke(app, ["sweep", "run", str(spec_path), "--db", str(db_path)])
+    assert sweep_result.exit_code == 0, sweep_result.output
+    assert "Executed 8 run(s); 0 failed." in sweep_result.output
+
+    conn = connect(db_path)
+    runs = list_runs(conn)
+    assert len(runs) == 8
+    assert all(r.status == "done" for r in runs)
+    assert all(r.n_examples == 10 for r in runs)
+
+    figures_result = runner.invoke(app, ["figures", "--db", str(db_path), "--out-dir", str(fig_dir)])
+    assert figures_result.exit_code == 0, figures_result.output
+
+    for name in ["accuracy_per_run.png", "scaling_curve.png", "trajectory.png"]:
+        png_path = fig_dir / name
+        assert png_path.exists(), name
+        assert png_path.stat().st_size > 0, name

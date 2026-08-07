@@ -220,6 +220,14 @@ predictions(request_hash PK, model_id, revision, payload_json)
 
 `report/findings.md` is written by hand, embeds these figures, and includes a future-work section (Paloma per-domain PPL, OLMo suite, dashboard, third framework) — the interview answer to "what would you do next."
 
+- **Phase 2.5 implementation** (`scaling_curve_chart`, `trajectory_chart` in `figures.py`; MC benchmarks only — bpb's twin axis waits for Sprint 3's perplexity evaluator):
+  - `PYTHIA_PARAM_COUNTS` (module-level dict, `figures.py`) is the single source of truth for param counts on the x-axis — deliberately *not* added to `client.py`'s model registry, since the registry's job is resolving `model_id` to an HF repo (§3), an orthogonal concern from plotting.
+  - `_revision_to_step` parses `"step<N>"` labels via regex and maps the literal string `"main"` to a hardcoded `_FINAL_STEP = 143_000` (Pythia's published final checkpoint step) — both figures skip (not error on) any run whose revision doesn't match either form, so a future non-Pythia model_id in the DB degrades gracefully instead of crashing figure generation.
+  - `scaling_curve_chart` only plots runs at the final checkpoint (`_revision_to_step(r.revision) == _FINAL_STEP`) — one point per (model, dataset) at the ladder's endpoint, matching "log-params vs. accuracy for all benchmarks" from architecture.md's original design. `trajectory_chart` is the complementary view: plots every parseable revision, one line per (model, dataset) pair, x-axis is training step.
+  - `_CHANCE_RATE` is a small fixed dict keyed by dataset (`arc_easy`/`hellaswag`/`mmlu` → 0.25, all 4-choice MC in the Sprint-2 grid); `scaling_curve_chart` draws one dashed chance line per benchmark that has an entry, color-matched to that benchmark's line. Not generalized beyond MC yet — PPL/GSM8K have no "chance" concept in the same sense.
+  - Both functions accept `metric: str = "acc"` so `acc_norm` can be plotted by passing `metric="acc_norm"`; the CLI's `figures` command currently only calls the `acc` variant (Phase 2.2's acc/acc_norm divergence-as-a-finding is future report material, not wired into the CLI's default figure set yet).
+  - `ladderctl figures` now writes three files unconditionally: `accuracy_per_run.png` (Sprint 1's bar chart, kept for now), `scaling_curve.png`, `trajectory.png`.
+
 ---
 
 ## 11. CLI (`cli.py` → `ladderctl`)
