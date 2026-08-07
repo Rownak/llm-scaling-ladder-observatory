@@ -214,12 +214,31 @@ class DummyClient(ModelClient):
         return text
 
     def token_nlls(self, text: str, context: str = "") -> TokenNLLs:
-        """Not yet implemented.
+        """See `ModelClient.token_nlls`. Deterministic pinned per-token NLLs.
 
-        Raises:
-            NotImplementedError: Always; arrives in Sprint 3.
+        Tokenizes `text` by whitespace splitting (no real tokenizer dependency,
+        matching `loglikelihood`'s `n_tokens = len(cont.split())` convention)
+        and derives one NLL per token from `_rng_value`, seeded per-token by
+        its index so the same (seed, model_id, revision, context, text)
+        always reproduces the same per-token sequence — usable as pinned
+        values in a hand-computed fixture test.
+
+        Args:
+            text: The text span to score.
+            context: Optional preceding context (not itself scored, but mixed
+                into the determinism key so the same `text` scores differently
+                under different context).
+
+        Returns:
+            Per-token NLLs (nats, each in [0.5, 4.5)) and the UTF-8 byte
+            length of `text`.
         """
-        raise NotImplementedError("DummyClient.token_nlls arrives in Sprint 3")
+        tokens = text.split()
+        nlls = []
+        for i, tok in enumerate(tokens):
+            u = self._rng_value(context, text, tok, str(i))
+            nlls.append(0.5 + 4.0 * u)
+        return TokenNLLs(nlls=nlls, n_bytes=len(text.encode("utf-8")))
 
 
 # --- HFClient ------------------------------------------------------------
@@ -334,12 +353,52 @@ class HFClient(ModelClient):
         return text
 
     def token_nlls(self, text: str, context: str = "") -> TokenNLLs:
-        """Not yet implemented.
+        """See `ModelClient.token_nlls`. One forward pass over context+text, shift-by-one NLL.
 
-        Raises:
-            NotImplementedError: Always; arrives in Sprint 3.
+        Tokenizes `context + text` jointly (same in-context rule as
+        `loglikelihood`, §3) and splits by the context's token count, so a
+        window boundary can never shift which tokens belong to `text`. Logits
+        at position `i` predict the token at `i + 1`; the token immediately
+        after the context is therefore predicted by the last context position
+        (or, if there is no context, scored unconditionally at position 0 by
+        omitting it from `nlls`, since there is no preceding position to
+        predict it from).
+
+        Args:
+            text: The text span to score.
+            context: Optional preceding context (not itself scored).
+
+        Returns:
+            Per-token NLLs (nats) for `text`'s tokens and the UTF-8 byte
+            length of `text`.
         """
-        raise NotImplementedError("HFClient.token_nlls arrives in Sprint 3")
+        import torch
+
+        context_ids = self.tokenizer(context, add_special_tokens=False)["input_ids"]
+        full_ids = self.tokenizer(context + text, add_special_tokens=False)["input_ids"]
+        n_context = len(context_ids)
+        text_ids = full_ids[n_context:]
+
+        n_bytes = len(text.encode("utf-8"))
+        if len(text_ids) == 0:
+            return TokenNLLs(nlls=[], n_bytes=n_bytes)
+
+        input_ids = torch.tensor([full_ids], device=self.device)
+        with torch.no_grad():
+            logits = self.model(input_ids).logits[0]  # (seq_len, vocab)
+        log_probs = torch.log_softmax(logits.float(), dim=-1)
+
+        # Position n_context - 1 predicts the first text token; the very first
+        # token of the sequence (n_context == 0) has no predicting position and
+        # is skipped, matching the shift-by-one convention used everywhere else.
+        nlls = []
+        for i, token_id in enumerate(text_ids):
+            pred_pos = n_context - 1 + i
+            if pred_pos < 0:
+                continue
+            nlls.append(-log_probs[pred_pos, token_id].item())
+
+        return TokenNLLs(nlls=nlls, n_bytes=n_bytes)
 
     def unload(self) -> None:
         """See `ModelClient.unload`. Drops the model reference and clears the CUDA cache if used.
