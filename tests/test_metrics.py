@@ -1,6 +1,8 @@
 """Hand-computed fixture tests for metric aggregation (architecture.md §6, §12)."""
 
-from ladder.metrics import acc, acc_norm
+import math
+
+from ladder.metrics import acc, acc_norm, perplexity_metrics
 from ladder.records import ExampleResult
 
 
@@ -79,3 +81,60 @@ def test_acc_norm_all_incorrect():
 
 def test_acc_norm_empty_list():
     assert acc_norm([]) == 0.0
+
+
+def _ppl_result(window_nlls: list[float], n_bytes: int, example_id: str = "doc") -> ExampleResult:
+    return ExampleResult(
+        run_id="run-1",
+        example_id=example_id,
+        correct=None,
+        score=0.0,
+        detail={"window_nlls": window_nlls, "n_bytes": n_bytes},
+    )
+
+
+def test_perplexity_metrics_hand_computed_single_document():
+    # Toy doc: 4 pinned NLLs (nats), 10 UTF-8 bytes — values chosen by hand,
+    # not from a real client, to isolate the aggregation formula itself.
+    #   window_nlls = [1.0, 2.0, 0.5, 0.5]
+    #   total_nll_nats = 4.0
+    #   n_scored_tokens = 4
+    #   ppl = exp(4.0 / 4) = exp(1.0) = 2.718281828459045
+    #   bpb = (4.0 / ln(2)) / 10 = (4.0 / 0.6931471805599453) / 10 = 0.5770780163555853
+    results = [_ppl_result([1.0, 2.0, 0.5, 0.5], n_bytes=10)]
+
+    metrics = perplexity_metrics(results)
+
+    assert metrics["n_scored_tokens"] == 4.0
+    assert metrics["n_bytes"] == 10.0
+    assert math.isclose(metrics["ppl"], 2.718281828459045, rel_tol=1e-9)
+    assert math.isclose(metrics["bpb"], 0.5770780163555853, rel_tol=1e-9)
+
+
+def test_perplexity_metrics_hand_computed_multi_document_sums_across_docs():
+    # Two documents; aggregation sums nlls/tokens/bytes across both before
+    # dividing (not a per-document average of per-document ppl/bpb).
+    #   doc A: window_nlls=[1.0, 1.0], n_bytes=5   -> nll=2.0, tokens=2
+    #   doc B: window_nlls=[3.0],       n_bytes=3   -> nll=3.0, tokens=1
+    #   total_nll_nats = 5.0, n_scored_tokens = 3, n_bytes = 8
+    #   ppl = exp(5.0 / 3) = exp(1.666666...) = 5.29449005047003
+    #   bpb = (5.0 / ln(2)) / 8 = (5.0 / 0.6931471805599453) / 8 = 0.9016844005556022
+    results = [
+        _ppl_result([1.0, 1.0], n_bytes=5, example_id="doc-a"),
+        _ppl_result([3.0], n_bytes=3, example_id="doc-b"),
+    ]
+
+    metrics = perplexity_metrics(results)
+
+    assert metrics["n_scored_tokens"] == 3.0
+    assert metrics["n_bytes"] == 8.0
+    assert math.isclose(metrics["ppl"], 5.29449005047003, rel_tol=1e-9)
+    assert math.isclose(metrics["bpb"], 0.9016844005556022, rel_tol=1e-9)
+
+
+def test_perplexity_metrics_empty_results():
+    metrics = perplexity_metrics([])
+    assert metrics["n_scored_tokens"] == 0.0
+    assert metrics["n_bytes"] == 0.0
+    assert metrics["ppl"] == float("inf")
+    assert metrics["bpb"] == 0.0
