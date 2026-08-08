@@ -114,6 +114,29 @@ def test_render_golden_mmlu_first_fixture_example():
     assert request.gen_params is None
 
 
+def test_load_variant_lambada_cloze_v1():
+    variant = load_variant("lambada/cloze_v1")
+    assert variant.id == "lambada/cloze_v1"
+    assert variant.task_family == "cloze"
+    assert variant.continuation_style is None
+    assert variant.num_fewshot == 0
+
+
+def test_render_golden_first_lambada_fixture_example():
+    loader = get_loader("lambada")
+    example = next(loader.load("fixture", limit=1))
+    variant = load_variant("lambada/cloze_v1")
+
+    request = render(example, variant)
+
+    assert request.prompt == "She looked out the window and smiled at the falling"
+    assert request.example_id == example.example_id
+    assert request.prompt_variant_id == "lambada/cloze_v1"
+    assert request.kind == "generate"
+    assert request.continuations is None
+    assert request.gen_params is None
+
+
 def test_render_is_pure_no_shared_mutation():
     loader = get_loader("arc_easy")
     example = next(loader.load("fixture", limit=1))

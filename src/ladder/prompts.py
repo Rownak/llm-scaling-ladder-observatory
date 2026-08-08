@@ -60,19 +60,36 @@ def load_variant(variant_id: str) -> PromptVariant:
 def render(example: Example, variant: PromptVariant) -> RenderedRequest:
     """Pure function (Example, PromptVariant) -> RenderedRequest.
 
-    Only `task_family == "mc"` is implemented in Sprint 1 (cloze/generative
-    arrive with their evaluators in Sprint 3).
+    `task_family in {"mc", "cloze"}` are implemented; "generative" arrives
+    with its evaluator later in Sprint 3 (architecture.md §6).
 
     Args:
         example: The `Example` to render a prompt for.
         variant: The `PromptVariant` template/config to render with.
 
     Returns:
-        A `RenderedRequest` with the formatted prompt and per-option continuations.
+        A `RenderedRequest` with the formatted prompt and per-option
+        continuations ("mc"), or a bare prompt with no continuations
+        ("cloze" — the evaluator generates instead of scoring options).
 
     Raises:
-        NotImplementedError: If `variant.task_family` is not "mc".
+        NotImplementedError: If `variant.task_family` is neither "mc" nor "cloze".
     """
+    if variant.task_family == "cloze":
+        # Pass-through template (architecture.md §5): LAMBADA's payload is
+        # already the exact context to condition generation on, so the
+        # template exists for provenance (recording which variant id scored
+        # a run) rather than to reformat anything.
+        prompt = variant.template.format(context=example.payload["context"])
+        return RenderedRequest(
+            example_id=example.example_id,
+            prompt_variant_id=variant.id,
+            kind="generate",
+            prompt=prompt,
+            continuations=None,
+            gen_params=None,
+        )
+
     if variant.task_family != "mc":
         raise NotImplementedError(f"task_family={variant.task_family!r} arrives in a later sprint")
 

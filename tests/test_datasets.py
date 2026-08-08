@@ -4,6 +4,7 @@ from ladder.datasets import (
     ArcEasyLoader,
     C4SliceLoader,
     HellaSwagLoader,
+    LambadaLoader,
     MmluLoader,
     WikiTextLoader,
     get_loader,
@@ -311,3 +312,59 @@ def test_c4_slice_constants_are_module_level():
 
     assert isinstance(_C4_SLICE_N, int) and _C4_SLICE_N > 0
     assert isinstance(_C4_SLICE_SEED, int)
+
+
+# --- LAMBADA ---------------------------------------------------------------
+
+
+def test_get_loader_returns_lambada_loader():
+    loader = get_loader("lambada")
+    assert isinstance(loader, LambadaLoader)
+
+
+def test_lambada_fixture_tier_yields_examples():
+    loader = get_loader("lambada")
+    examples = list(loader.load("fixture"))
+    assert len(examples) == 10
+    for ex in examples:
+        assert isinstance(ex, Example)
+
+
+def test_lambada_fixture_tier_schema():
+    loader = get_loader("lambada")
+    for ex in loader.load("fixture"):
+        assert ex.dataset == "lambada"
+        assert ex.split == "fixture"
+        assert isinstance(ex.example_id, str) and ex.example_id.startswith("lambada-")
+        assert set(ex.payload.keys()) == {"context", "target"}
+        assert isinstance(ex.payload["context"], str) and ex.payload["context"]
+        assert isinstance(ex.payload["target"], str) and ex.payload["target"]
+        # target is a single word: no internal whitespace.
+        assert " " not in ex.payload["target"]
+
+
+def test_lambada_fixture_tier_stable_ids_are_unique():
+    loader = get_loader("lambada")
+    ids = [ex.example_id for ex in loader.load("fixture")]
+    assert len(ids) == len(set(ids))
+
+
+def test_lambada_fixture_tier_respects_limit():
+    loader = get_loader("lambada")
+    examples = list(loader.load("fixture", limit=3))
+    assert len(examples) == 3
+
+
+def test_lambada_fixture_tier_ids_are_stable_across_loads():
+    loader = get_loader("lambada")
+    ids_first = [ex.example_id for ex in loader.load("fixture")]
+    ids_second = [ex.example_id for ex in loader.load("fixture")]
+    assert ids_first == ids_second
+
+
+def test_lambada_to_example_splits_last_word_as_target():
+    row = {"text": "The dog chased the ball across the yard"}
+    ex = LambadaLoader._to_example(row, "fixture", 0)
+    assert ex.payload["context"] == "The dog chased the ball across the"
+    assert ex.payload["target"] == "yard"
+    assert ex.example_id == "lambada-0"

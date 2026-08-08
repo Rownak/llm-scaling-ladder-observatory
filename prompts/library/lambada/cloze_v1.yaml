@@ -1,0 +1,5 @@
+id: lambada/cloze_v1
+task_family: cloze
+template: "{context}"
+continuation_style: null
+num_fewshot: 0

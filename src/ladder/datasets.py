@@ -389,3 +389,61 @@ class C4SliceLoader(DatasetLoader):
 
 
 register("c4_slice", C4SliceLoader)
+
+
+class LambadaLoader(DatasetLoader):
+    """LAMBADA, OpenAI variant (EleutherAI/lambada_openai).
+
+    Normalized cloze payload: {context, target} (architecture.md §4). Each
+    raw row is one passage whose final word is the token every LAMBADA item
+    is testing prediction of; the OpenAI variant's preprocessing (already
+    applied by the `EleutherAI/lambada_openai` Hub dataset, not redone here)
+    is what makes "split off the last whitespace-delimited word" the correct
+    context/target split — the raw text has already been detokenized/cleaned
+    so this split lines up with the benchmark's intended target.
+    """
+
+    name = "lambada"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "lambada.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("EleutherAI/lambada_openai", "default", split=split)
+        count = 0
+        for i, row in enumerate(ds):
+            if limit is not None and count >= limit:
+                return
+            yield self._to_example(row, split, i)
+            count += 1
+
+    @staticmethod
+    def _to_example(row: dict, split: str, index: int) -> Example:
+        """Convert one raw lambada_openai row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from `EleutherAI/lambada_openai`, carrying `text`.
+            split: Split label to record on the resulting `Example`.
+            index: Row position, used to build a stable `example_id` (the
+                dataset carries no native row ID).
+
+        Returns:
+            An `Example` with payload {context, target} — `target` is the
+            passage's final whitespace-delimited word, `context` everything
+            before it (with the trailing space stripped).
+        """
+        text = row["text"].rstrip()
+        context, _, target = text.rpartition(" ")
+        return Example(
+            dataset="lambada",
+            split=split,
+            example_id=f"lambada-{index}",
+            payload={"context": context, "target": target},
+        )
+
+
+register("lambada", LambadaLoader)

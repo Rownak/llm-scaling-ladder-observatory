@@ -1,0 +1,10 @@
+{"dataset":"lambada","split":"fixture","example_id":"lambada-0","payload":{"context":"She looked out the window and smiled at the falling","target":"snow"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-1","payload":{"context":"He reached into his pocket and pulled out his car","target":"keys"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-2","payload":{"context":"The chef added a pinch of salt and a dash of","target":"pepper"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-3","payload":{"context":"After the long hike, they finally reached the top of the","target":"mountain"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-4","payload":{"context":"The children ran outside to play in the freshly fallen","target":"snow"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-5","payload":{"context":"She opened the book and began to read the first","target":"page"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-6","payload":{"context":"The astronauts prepared for their journey to the","target":"moon"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-7","payload":{"context":"He tuned his guitar before the start of the","target":"concert"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-8","payload":{"context":"The detective examined the room for any signs of a","target":"struggle"}}
+{"dataset":"lambada","split":"fixture","example_id":"lambada-9","payload":{"context":"The farmer woke up early to milk the","target":"cows"}}

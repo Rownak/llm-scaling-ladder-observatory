@@ -1,10 +1,10 @@
-"""loglik_mc/perplexity evaluators: render -> client call -> score -> ExampleResult (architecture.md §6)."""
+"""loglik_mc/perplexity/cloze evaluators: render -> client call -> score -> ExampleResult (architecture.md §6)."""
 
 import math
 
-from ladder.client import get_client
+from ladder.client import GenParams, LoglikResult, ModelClient, TokenNLLs, get_client
 from ladder.datasets import get_loader
-from ladder.evaluators import loglik_mc, perplexity
+from ladder.evaluators import cloze, loglik_mc, perplexity
 from ladder.metrics import acc, perplexity_metrics
 from ladder.prompts import load_variant
 from ladder.records import Example, ExampleResult
@@ -193,3 +193,141 @@ def test_perplexity_multiple_documents_aggregate_across_run(tmp_path):
     expected_bytes = sum(r.detail["n_bytes"] for r in results)
     assert metrics["n_scored_tokens"] == expected_tokens
     assert metrics["n_bytes"] == expected_bytes
+
+
+# --- cloze (LAMBADA) --------------------------------------------------------
+
+
+class _RiggedClient(ModelClient):
+    """Fake `ModelClient` whose `generate` output is set per-prompt by the test.
+
+    `DummyClient.generate` always produces "The answer is {number}." (client.py),
+    which can never equal an arbitrary LAMBADA target word, so it cannot
+    exercise `cloze`'s "reproduces the target" path. This rigged client lets a
+    test pin an exact generation per prompt (Sprint 3, Phase 3.4's "DummyClient
+    rigged to reproduce/not-reproduce targets" requirement) while keeping
+    `loglikelihood` deterministic so `detail["target_logprob"]` is still
+    checkable.
+    """
+
+    def __init__(self, generations: dict[str, str], loglik_value: float = -1.5):
+        self._generations = generations
+        self._loglik_value = loglik_value
+
+    def loglikelihood(self, prompt: str, continuations: list[str]) -> list[LoglikResult]:
+        return [LoglikResult(loglik=self._loglik_value, n_tokens=1) for _ in continuations]
+
+    def generate(self, prompt: str, params: GenParams) -> str:
+        return self._generations[prompt]
+
+    def token_nlls(self, text: str, context: str = "") -> TokenNLLs:
+        raise NotImplementedError
+
+
+def _lambada_example(context: str, target: str, example_id: str = "lambada-x") -> Example:
+    return Example(dataset="lambada", split="fixture", example_id=example_id, payload={"context": context, "target": target})
+
+
+def test_cloze_exact_match_when_generation_equals_target(tmp_path):
+    example = _lambada_example("The sky is very", "blue")
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient({"The sky is very": " blue"})
+
+    (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.correct is True
+    assert result.score == 1.0
+    assert result.detail["generation"] == " blue"
+    assert result.detail["target"] == "blue"
+
+
+def test_cloze_no_match_when_generation_differs_from_target(tmp_path):
+    example = _lambada_example("The sky is very", "blue")
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient({"The sky is very": " green"})
+
+    (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.correct is False
+    assert result.score == 0.0
+    assert result.detail["generation"] == " green"
+
+
+def test_cloze_strips_whitespace_before_comparing(tmp_path):
+    # Generation carries a leading space (continuation convention, same as
+    # loglik_mc's " A"/" foo" continuations) and possibly trailing
+    # whitespace/newline fragments; comparison must strip both.
+    example = _lambada_example("Roses are red, violets are", "blue")
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient({"Roses are red, violets are": "  blue  "})
+
+    (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.correct is True
+
+
+def test_cloze_target_logprob_stored_in_detail(tmp_path):
+    example = _lambada_example("The sky is very", "blue")
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient({"The sky is very": " blue"}, loglik_value=-2.75)
+
+    (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.detail["target_logprob"] == -2.75
+
+
+def test_cloze_accuracy_hand_computed_three_of_five(tmp_path):
+    # Sprint 3, Phase 3.4: accuracy fixture worked by hand. 5 examples, rigged
+    # generations: 3 exactly reproduce their target, 2 don't.
+    #   ex0: target="blue"  generation=" blue"  -> match
+    #   ex1: target="snow"  generation=" snow"  -> match
+    #   ex2: target="keys"  generation=" wallet" -> no match
+    #   ex3: target="pepper" generation=" pepper" -> match
+    #   ex4: target="page"  generation=" book"  -> no match
+    # acc = 3/5 = 0.6
+    examples = [
+        _lambada_example("The sky is very", "blue", "ex0"),
+        _lambada_example("It began to", "snow", "ex1"),
+        _lambada_example("He grabbed his", "keys", "ex2"),
+        _lambada_example("Add a dash of", "pepper", "ex3"),
+        _lambada_example("She opened the", "page", "ex4"),
+    ]
+    generations = {
+        "The sky is very": " blue",
+        "It began to": " snow",
+        "He grabbed his": " wallet",
+        "Add a dash of": " pepper",
+        "She opened the": " book",
+    }
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient(generations)
+
+    results = list(cloze("run-1", examples, variant, client, _cache(tmp_path), "dummy", "main"))
+    accuracy = acc(results)
+
+    assert accuracy == 0.6
+    assert sum(1 for r in results if r.correct) == 3
+
+
+def test_cloze_max_new_tokens_scales_with_target_word_count(tmp_path):
+    # A multi-word target should get a proportionally larger generation
+    # budget, not a fixed cap sized for single-word LAMBADA targets.
+    from ladder.evaluators import _CLOZE_TOKENS_PER_TARGET_WORD
+
+    example = _lambada_example("They walked into the", "old wooden barn")
+    variant = load_variant("lambada/cloze_v1")
+
+    class _CapturingClient(_RiggedClient):
+        def __init__(self):
+            super().__init__({"They walked into the": " old wooden barn"})
+            self.seen_params: GenParams | None = None
+
+        def generate(self, prompt: str, params: GenParams) -> str:
+            self.seen_params = params
+            return super().generate(prompt, params)
+
+    client = _CapturingClient()
+    list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert client.seen_params is not None
+    assert client.seen_params.max_new_tokens == _CLOZE_TOKENS_PER_TARGET_WORD * 3

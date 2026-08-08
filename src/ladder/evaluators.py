@@ -1,19 +1,20 @@
 """Evaluators: render -> client call -> score -> `ExampleResult`.
 
-Sprint 1 implements `loglik_mc`; `perplexity` arrives in Sprint 3 Phase 3.2;
-`cloze` and `generative` arrive later in Sprint 3 (architecture.md §6).
+Sprint 1 implements `loglik_mc`; `perplexity` and `cloze` arrive in Sprint 3
+Phases 3.2/3.4; `generative` arrives later in Sprint 3 (architecture.md §6).
 """
 
 import math
 from collections.abc import Iterator
 
-from ladder.client import LoglikResult, ModelClient
+from ladder.client import GenParams, LoglikResult, ModelClient
 from ladder.prompts import PromptVariant, render
 from ladder.records import Example, ExampleResult, Prediction
 from ladder.storage import PredictionCache
 
 _DEFAULT_WINDOW = 1024
 _NATS_PER_BIT = math.log(2)  # converts nats to bits for bpb
+_CLOZE_TOKENS_PER_TARGET_WORD = 4  # generation budget headroom per target word
 
 
 def loglik_mc(
@@ -252,3 +253,119 @@ def perplexity(
             score=bpb,
             detail={"window_nlls": window_nlls, "n_bytes": n_bytes},
         )
+
+
+def cloze(
+    run_id: str,
+    examples: Iterator[Example],
+    variant: PromptVariant,
+    client: ModelClient,
+    cache: PredictionCache,
+    model_id: str,
+    revision: str,
+) -> Iterator[ExampleResult]:
+    """Score LAMBADA-style cloze examples: greedy-generate, exact-match the target.
+
+    For each example: render its `RenderedRequest` via `variant` (a pass-
+    through cloze template, §5), then greedily generate from `client` with a
+    token budget sized to the target (`_CLOZE_TOKENS_PER_TARGET_WORD` tokens
+    per target word — generous headroom since token count and word count
+    aren't the same thing, but the target is short so overshoot is cheap).
+    `correct` is exact string match between the generated text (stripped of
+    leading/trailing whitespace, matching how `target` is stored — no
+    casing/punctuation normalization) and `target`. The target's own logprob
+    is scored separately via `client.loglikelihood` and stored in `detail`
+    regardless of whether generation matched, since it's useful signal on
+    its own (how confident the model was in the correct word, not just
+    whether greedy decoding happened to produce it).
+
+    Both the generation and the target-logprob calls go through `cache`
+    first (architecture.md §7) — a "generate" cache entry is keyed on
+    `(prompt, gen_params)`, a "loglik" entry on `(prompt, [target])`, so they
+    never collide even though both read the same underlying example.
+
+    Args:
+        run_id: ID of the `RunRecord` these results belong to.
+        examples: `Example`s to evaluate, each with `payload["context"]`/`["target"]`.
+        variant: `PromptVariant` used to render each example into a request.
+        client: `ModelClient` used to generate/score on a cache miss.
+        cache: `PredictionCache` consulted before every client call.
+        model_id: Registry model_id, part of the cache key (see `loglik_mc`).
+        revision: Model checkpoint/revision, part of the cache key.
+
+    Yields:
+        One `ExampleResult` per input example; `detail` carries the raw
+        generation, the target, and the target's logprob.
+    """
+    for example in examples:
+        request = render(example, variant)
+        target = example.payload["target"]
+
+        max_new_tokens = _CLOZE_TOKENS_PER_TARGET_WORD * max(1, len(target.split()))
+        gen_params = GenParams(max_new_tokens=max_new_tokens, stop=["\n"], temperature=0.0)
+        generation = _cached_generate(client, cache, model_id, revision, request.prompt, gen_params)
+
+        (target_scored,) = _scored_continuations(
+            client, cache, model_id, revision, request.prompt, [f" {target}"]
+        )
+
+        is_correct = generation.strip() == target
+        yield ExampleResult(
+            run_id=run_id,
+            example_id=example.example_id,
+            correct=is_correct,
+            score=1.0 if is_correct else 0.0,
+            detail={
+                "target": target,
+                "generation": generation,
+                "target_logprob": target_scored.loglik,
+            },
+        )
+
+
+def _cached_generate(
+    client: ModelClient,
+    cache: PredictionCache,
+    model_id: str,
+    revision: str,
+    prompt: str,
+    gen_params: GenParams,
+) -> str:
+    """Generate from `prompt`, consulting `cache` before any `client.generate` call.
+
+    Args:
+        client: `ModelClient` used to generate on a cache miss.
+        cache: `PredictionCache` consulted/updated for this request.
+        model_id: Registry model_id, part of the cache key.
+        revision: Model checkpoint/revision, part of the cache key.
+        prompt: The rendered prompt text to generate from.
+        gen_params: Generation parameters, part of the cache key.
+
+    Returns:
+        The generated text, sourced from the cache where possible and the
+        client otherwise.
+    """
+    gen_params_dict = gen_params.model_dump()
+    cached = cache.get(model_id, revision, "generate", prompt, None, gen_params_dict)
+    if cached is not None:
+        return cached.generation
+
+    generation = client.generate(prompt, gen_params)
+    cache.put(
+        model_id,
+        revision,
+        "generate",
+        prompt,
+        None,
+        gen_params_dict,
+        Prediction(
+            request_hash="",
+            model_id=model_id,
+            revision=revision,
+            logliks=None,
+            token_nlls=None,
+            generation=generation,
+            n_bytes=None,
+        ),
+    )
+    return generation
