@@ -1,8 +1,11 @@
-# The one sweep spec for the project (architecture.md §8, sprints/sprint2.md Phase 2.4).
+# The one sweep spec for the project (architecture.md §8, sprints/sprint2.md
+# Phase 2.4; extended to all 7 eval targets in sprints/sprint3.md Phase 3.6).
 #
-# Axes: 4 Pythia sizes x 3 revisions (early/mid/final checkpoint) x 3 MC
-# benchmarks x 1 prompt variant each, capped at 500 examples per run.
-# ~12 model points x 3 targets x <=500 examples ~= 18k examples total.
+# Axes: 4 Pythia sizes x 3 revisions (early/mid/final checkpoint) x 7 eval
+# targets (3 MC benchmarks, 2 PPL corpora, 1 cloze, 1 generative), capped at
+# 500 examples per run (PPL targets additionally capped by their own loader
+# constants — WikiText/C4 docs, not "examples" in the MC sense).
+# ~12 model points x 7 targets x <=500 examples ~= 42k examples total.
 #
 # step1000/step64000 are revision tags published for every model in the
 # EleutherAI Pythia suite; "main" resolves to the final (step143000) checkpoint.
@@ -30,6 +33,23 @@ targets:
     variant: mmlu/mc_letter_v1
     evaluator: loglik_mc
     split: test
+  - dataset: lambada
+    variant: lambada/cloze_v1
+    evaluator: cloze
+    split: test
+  - dataset: gsm8k
+    variant: gsm8k/gen_v1
+    evaluator: generative
+    split: test
+  # PPL targets: no variant (perplexity scores raw documents, no prompt to
+  # render); doc cap for C4 comes from its own loader constant (_C4_SLICE_N),
+  # not this file's `limit`, which still applies as an upper bound on top of it.
+  - dataset: wikitext103
+    evaluator: perplexity
+    split: test
+  - dataset: c4_slice
+    evaluator: perplexity
+    split: validation
 
 limit: 500
 seed: 0

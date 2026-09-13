@@ -26,9 +26,18 @@ PYTHIA_PARAM_COUNTS = {
     "pythia-1b": 1_000_000_000,
 }
 
-# 4-option multiple-choice chance rate for every benchmark in the Sprint-2
-# sweep (arc_easy, hellaswag, mmlu all have 4 choices per item).
-_CHANCE_RATE = {"arc_easy": 0.25, "hellaswag": 0.25, "mmlu": 0.25}
+# Chance rate for every accuracy-style benchmark in the full Sprint-3 sweep.
+# arc_easy/hellaswag/mmlu are 4-option MC (0.25); lambada is a giant-vocabulary
+# generation match, whose chance rate is ~0 (not exactly 0, but indistinguishable
+# from it at the scale plotted here); gsm8k is free-form numeric generation, so
+# "chance" is likewise ~0 (architecture.md §10 — GSM8K-at-chance is itself the
+# expected Sprint 3 finding, not a bug).
+_CHANCE_RATE = {"arc_easy": 0.25, "hellaswag": 0.25, "mmlu": 0.25, "lambada": 0.0, "gsm8k": 0.0}
+
+# The 5 accuracy-style benchmarks plotted on the headline figure's left axis
+# (architecture.md §10) — excludes the 2 PPL corpora (wikitext103, c4_slice),
+# which contribute to the right (bpb) axis instead via a separate metric.
+_HEADLINE_ACC_DATASETS = ["arc_easy", "hellaswag", "mmlu", "lambada", "gsm8k"]
 
 # Fixed dataset -> color assignment, shared by every figure that plots more
 # than one benchmark. A plain matplotlib color cycler repeats after 10 lines
@@ -39,8 +48,10 @@ _DATASET_COLORS = {
     "arc_easy": "tab:blue",
     "hellaswag": "tab:orange",
     "mmlu": "tab:green",
+    "lambada": "tab:red",
+    "gsm8k": "tab:purple",
 }
-_FALLBACK_COLOR_CYCLE = ["tab:red", "tab:purple", "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan"]
+_FALLBACK_COLOR_CYCLE = ["tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan"]
 
 
 def _color_for_dataset(dataset: str, seen: dict[str, str]) -> str:
@@ -218,6 +229,104 @@ def scaling_curve_chart(
     return out_path
 
 
+# bpb is "smaller is better"; the headline figure plots it on a twin y-axis
+# inverted (via `ax2.invert_yaxis()`) so both axes read "up = better" at a
+# glance — a viewer shouldn't have to remember that one of the two lines on
+# the same figure is inverted relative to the other (architecture.md §10).
+def headline_figure(runs: list[RunRecord], out_path: str | Path) -> Path:
+    """Render the project's headline figure: accuracy (5 benchmarks) + bpb (2 PPL corpora) vs. log-params.
+
+    The core Sprint 3 finding (architecture.md §10, sprints/sprint3.md Phase
+    3.6): left axis plots `acc` for the 5 accuracy-style benchmarks
+    (`_HEADLINE_ACC_DATASETS`) against `log10(param count)`, with a dashed
+    chance line per benchmark (`_CHANCE_RATE`); right axis plots `bpb` for the
+    2 PPL corpora (wikitext103, c4_slice) on the same x-axis, inverted so
+    "up = better" holds for both axes simultaneously — bits-per-byte falling
+    as scale increases should visually track the same direction as accuracy
+    rising, letting a viewer read "smooth benchmarks + bpb improve together,
+    MMLU/GSM8K stay flat at chance" directly off the plot.
+
+    Only the final checkpoint of each model in `PYTHIA_PARAM_COUNTS` is
+    plotted (matching `scaling_curve_chart`) — this is the "at full training"
+    scaling view; per-checkpoint training dynamics are `trajectory_chart`'s job.
+
+    Args:
+        runs: `RunRecord`s to plot. Only `status == "done"` runs whose
+            `model_id` is in `PYTHIA_PARAM_COUNTS` and whose `revision`
+            resolves to the final checkpoint are considered; a run
+            contributes to the left axis if `"acc" in metrics` and its
+            dataset is in `_HEADLINE_ACC_DATASETS`, or to the right axis if
+            `"bpb" in metrics` and its dataset is a PPL corpus. Everything
+            else (unknown models, intermediate checkpoints, other datasets)
+            is silently skipped, not an error.
+        out_path: Destination PNG path.
+
+    Returns:
+        `out_path`, coerced to a `Path`.
+
+    Side Effects:
+        Writes a PNG file to `out_path`, overwriting any existing file.
+    """
+    out_path = Path(out_path)
+
+    acc_series: dict[str, list[tuple[float, float]]] = {}
+    bpb_series: dict[str, list[tuple[float, float]]] = {}
+    for r in runs:
+        if r.status != "done":
+            continue
+        n_params = PYTHIA_PARAM_COUNTS.get(r.model_id)
+        if n_params is None:
+            continue
+        if _revision_to_step(r.revision) != _FINAL_STEP:
+            continue
+        log_params = math.log10(n_params)
+
+        if r.dataset in _HEADLINE_ACC_DATASETS and "acc" in r.metrics:
+            acc_series.setdefault(r.dataset, []).append((log_params, r.metrics["acc"]))
+        elif "bpb" in r.metrics:
+            bpb_series.setdefault(r.dataset, []).append((log_params, r.metrics["bpb"]))
+
+    fig, ax1 = plt.subplots(figsize=(8, 5.5))
+    ax2 = ax1.twinx()
+    seen_colors: dict[str, str] = {}
+
+    acc_lines = []
+    for dataset in sorted(acc_series):
+        points = sorted(acc_series[dataset])
+        xs, ys = zip(*points)
+        color = _color_for_dataset(dataset, seen_colors)
+        (line,) = ax1.plot(xs, ys, marker="o", label=dataset, color=color)
+        acc_lines.append(line)
+        if dataset in _CHANCE_RATE:
+            ax1.axhline(_CHANCE_RATE[dataset], linestyle="--", linewidth=1, color=color, alpha=0.6)
+
+    bpb_lines = []
+    for dataset in sorted(bpb_series):
+        points = sorted(bpb_series[dataset])
+        xs, ys = zip(*points)
+        color = _color_for_dataset(dataset, seen_colors)
+        (line,) = ax2.plot(xs, ys, marker="s", linestyle="--", label=f"{dataset} (bpb)", color=color)
+        bpb_lines.append(line)
+
+    ax1.set_xlabel("log10(parameters)")
+    ax1.set_ylabel("accuracy")
+    ax1.set_ylim(0, 1)
+    ax2.set_ylabel("bits-per-byte (bpb)")
+    if bpb_series:
+        ax2.invert_yaxis()  # smaller bpb = better; inverted so "up = better" matches the accuracy axis
+
+    ax1.set_title("Headline: accuracy + bits-per-byte across the scaling ladder")
+    handles = acc_lines + bpb_lines
+    if handles:
+        ax1.legend(handles=handles, labels=[h.get_label() for h in handles], loc="best", fontsize="small")
+
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+    return out_path
+
+
 def trajectory_chart(runs: list[RunRecord], out_path: str | Path, metric: str = "acc") -> Path:
     """Render `metric` vs. training step, one line per (model, dataset) pair.
 
@@ -238,7 +347,9 @@ def trajectory_chart(runs: list[RunRecord], out_path: str | Path, metric: str = 
             revision `_revision_to_step` can parse and `metric` present in
             `metrics` are plotted.
         out_path: Destination PNG path.
-        metric: Which metric key to plot ("acc" or "acc_norm").
+        metric: Which metric key to plot ("acc", "acc_norm", or "bpb" — the
+            y-axis is capped to [0, 1] only for the two accuracy-style
+            metrics, since bpb has no fixed range).
 
     Returns:
         `out_path`, coerced to a `Path`.
@@ -275,7 +386,8 @@ def trajectory_chart(runs: list[RunRecord], out_path: str | Path, metric: str = 
 
     ax.set_xlabel("training step")
     ax.set_ylabel(metric)
-    ax.set_ylim(0, 1)
+    if metric in ("acc", "acc_norm"):
+        ax.set_ylim(0, 1)  # bpb has no fixed [0, 1] range, so the cap only applies to accuracy-style metrics
     ax.set_title(f"Training trajectory ({metric})")
 
     if series:

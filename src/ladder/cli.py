@@ -1,7 +1,9 @@
 """`ladderctl` — the one CLI for the project (architecture.md §11).
 
 Sprint 1 wires the walking-skeleton commands: `run`, `results`, `show`,
-`figures`. `sweep`, `parity`, and `import` arrive in later sprints.
+`figures`. Sprint 2 adds `sweep run`. Sprint 3 wires all four evaluators
+(`loglik_mc`, `perplexity`, `cloze`, `generative`) into `run`/`sweep run`.
+`parity` and `import` arrive in later sprints.
 """
 
 import uuid
@@ -13,9 +15,9 @@ import typer
 from ladder import __version__
 from ladder.client import get_client
 from ladder.datasets import get_loader
-from ladder.evaluators import loglik_mc
-from ladder.figures import accuracy_bar_chart, scaling_curve_chart, trajectory_chart
-from ladder.metrics import acc, acc_norm
+from ladder.evaluators import cloze, generative, loglik_mc, perplexity
+from ladder.figures import accuracy_bar_chart, headline_figure, scaling_curve_chart, trajectory_chart
+from ladder.metrics import acc, acc_norm, perplexity_metrics
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
 from ladder.storage import (
@@ -33,7 +35,17 @@ app = typer.Typer(add_completion=False)
 sweep_app = typer.Typer(add_completion=False, help="Sweep spec execution")
 app.add_typer(sweep_app, name="sweep")
 
-_EVALUATORS = {"loglik_mc": loglik_mc}
+_EVALUATORS = {
+    "loglik_mc": loglik_mc,
+    "perplexity": perplexity,
+    "cloze": cloze,
+    "generative": generative,
+}
+
+# Evaluators whose function signature omits `variant` entirely (architecture.md
+# §6) — `perplexity` has no prompt to render, since PPL documents are scored
+# directly, not through a `PromptVariant` template.
+_NO_VARIANT_EVALUATORS = {"perplexity"}
 
 
 def _now_iso() -> str:
@@ -50,7 +62,9 @@ def run(
     model: str = typer.Option(..., help="model_id, e.g. pythia-70m"),
     revision: str = typer.Option("main", help="Model checkpoint/revision"),
     dataset: str = typer.Option(..., help="Registry dataset name, e.g. arc_easy"),
-    variant: str = typer.Option(..., help="Prompt variant id, e.g. arc_easy/mc_letter_v1"),
+    variant: str = typer.Option(
+        None, help="Prompt variant id, e.g. arc_easy/mc_letter_v1 (omit for --evaluator perplexity)"
+    ),
     evaluator: str = typer.Option(..., help="Evaluator name, e.g. loglik_mc"),
     split: str = typer.Option("test", help="Dataset split (use 'fixture' for offline runs)"),
     limit: int = typer.Option(None, help="Max examples to evaluate"),
@@ -106,17 +120,23 @@ def run(
     try:
         loader = get_loader(dataset)
         examples = list(loader.load(split, limit=limit))
-        prompt_variant = load_variant(variant)
         client = get_client(model, revision=revision)
         cache = PredictionCache(conn)
 
         evaluator_fn = _EVALUATORS[evaluator]
-        results = list(evaluator_fn(run_id, examples, prompt_variant, client, cache, model, revision))
+        if evaluator in _NO_VARIANT_EVALUATORS:
+            results = list(evaluator_fn(run_id, examples, client, cache, model, revision))
+        else:
+            prompt_variant = load_variant(variant)
+            results = list(evaluator_fn(run_id, examples, prompt_variant, client, cache, model, revision))
         save_example_results(conn, results)
 
-        metrics = {"acc": acc(results)}
-        if evaluator == "loglik_mc":
-            metrics["acc_norm"] = acc_norm(results)
+        if evaluator == "perplexity":
+            metrics = perplexity_metrics(results)
+        else:
+            metrics = {"acc": acc(results)}
+            if evaluator == "loglik_mc":
+                metrics["acc_norm"] = acc_norm(results)
 
         run_record.status = "done"
         run_record.metrics = metrics
@@ -251,5 +271,13 @@ def figures(
 
     out_path = out_dir / "trajectory.png"
     trajectory_chart(runs, out_path)
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "trajectory_bpb.png"
+    trajectory_chart(runs, out_path, metric="bpb")
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "headline.png"
+    headline_figure(runs, out_path)
     typer.echo(f"Wrote {out_path}")
 

@@ -214,6 +214,11 @@ predictions(request_hash PK, model_id, revision, payload_json)
   - **Resume matching is config-based, not `run_id`-based**: since every execution mints a fresh `run_id`, "already done" is decided by `_sweep_run_key` — the tuple `(model_id, revision, dataset, split, prompt_variant_id, evaluator, config["limit"], seed)` — checked against every `status == "done"` row already in the DB before a `SweepRun` executes. A run matching an existing `done` row is skipped with zero client calls and zero new rows; this is orthogonal to (and layered on top of) the per-request `PredictionCache`, which still applies within any run that *does* execute.
   - `run_sweep(conn, spec, evaluators=None)` takes an optional evaluator-name→function map (defaults to the real registry, `{"loglik_mc": loglik_mc}`) purely so tests can substitute without touching the module import graph; production callers (the CLI) never pass it.
   - The executor reuses `cli.run`'s single-run pipeline logic (load → render/score → aggregate → persist) via a private `_execute_one`, rather than the CLI command calling into `sweep.py`'s runner — `ladderctl sweep run sweeps/main.yaml` is a thin wrapper that loads the spec, calls `run_sweep`, and prints a per-run summary line + a nonzero exit if any run failed.
+- **Phase 3.6 implementation** (`sweeps/main.yaml` v2, all 4 evaluators wired into `sweep.py`/`cli.py`):
+  - `SweepTarget.variant` is now `str | None = None` — `perplexity` targets carry no variant at all, since `evaluators.perplexity`'s function signature omits `variant` entirely (it scores raw documents, no prompt template to render). `_NO_VARIANT_EVALUATORS = {"perplexity"}` (mirrored in both `sweep.py` and `cli.py`) is the single flag `_execute_one`/`cli.run` branch on to decide whether to call `load_variant` + pass `prompt_variant` positionally, or call the evaluator with one fewer argument. This is a deliberate asymmetry in the evaluator call signature (documented here, not papered over) rather than forcing `perplexity` to accept an unused `variant` param just for uniformity.
+  - `_default_evaluators()` (`sweep.py`) and `_EVALUATORS` (`cli.py`) both now map all four names — `loglik_mc`, `perplexity`, `cloze`, `generative` — to their `evaluators.py` functions; previously only `loglik_mc` was wired (Sprint 1), with `perplexity`/`cloze`/`generative` implemented but unreachable from the CLI/sweep executor until this phase.
+  - Metrics computation branches on evaluator name in both `_execute_one` and `cli.run`: `perplexity` → `metrics.perplexity_metrics(results)` (`{ppl, bpb, n_scored_tokens, n_bytes}`); every other evaluator → `{"acc": acc(results)}`, with `acc_norm` added only for `loglik_mc` (unchanged from Sprint 1/2). `RunRecord.metrics` is `dict[str, float]` regardless of evaluator, so no schema change was needed here — only which keys get populated.
+  - `sweeps/main.yaml` now declares 7 targets (3 MC unchanged from Sprint 2, plus `lambada`/`cloze`, `gsm8k`/`generative`, `wikitext103`/`perplexity`, `c4_slice`/`perplexity`) × the unchanged 4-model × 3-revision grid — ~12 model points × 7 targets × ≤500 examples/target ≈ 42k examples total (C4's own `_C4_SLICE_N=200` loader constant additionally caps that target below the 500 spec cap).
 
 ---
 
@@ -244,6 +249,11 @@ predictions(request_hash PK, model_id, revision, payload_json)
   - Both functions accept `metric: str = "acc"` so `acc_norm` can be plotted by passing `metric="acc_norm"`; the CLI's `figures` command currently only calls the `acc` variant (Phase 2.2's acc/acc_norm divergence-as-a-finding is future report material, not wired into the CLI's default figure set yet).
   - `ladderctl figures` now writes three files unconditionally: `accuracy_per_run.png` (Sprint 1's bar chart, kept for now), `scaling_curve.png`, `trajectory.png`.
   - **Color/marker encoding is fixed, not a default cycler.** `trajectory_chart` plots up to 4 models × 3+ benchmarks (12+ lines); matplotlib's default color cycle only has 10 entries and starts silently reusing colors past that, making lines indistinguishable. Line color is assigned by benchmark (`_color_for_dataset`, fixed `_DATASET_COLORS` for the known Sprint-2 benchmarks, a small fallback cycle for anything else) and marker shape by model size (`_marker_for_model`, fixed `_MODEL_MARKERS` ordered smallest-to-largest Pythia size, same fallback pattern). `scaling_curve_chart` reuses `_color_for_dataset` too, so a benchmark's color is consistent across both figures. `trajectory_chart` renders two separate legends (`ax.add_artist` to keep both), one for the color→benchmark mapping and one for the marker→model mapping, rather than one combined "model/dataset" legend entry per line.
+- **Phase 3.6 implementation** (`headline_figure` in `figures.py` — the headline figure described in item 1 above, now actually implemented):
+  - Left axis: `acc` for the 5 accuracy-style datasets (`_HEADLINE_ACC_DATASETS = [arc_easy, hellaswag, mmlu, lambada, gsm8k]`), final checkpoint only, one dashed chance line per benchmark via the now-extended `_CHANCE_RATE` (`lambada`/`gsm8k` added at `0.0` — free-form generation/exact-match tasks have no multiple-choice guessing floor, unlike the 4-option MC benchmarks at `0.25`). Right axis (`ax2 = ax1.twinx()`): `bpb` for any run whose dataset isn't in `_HEADLINE_ACC_DATASETS` (i.e. the PPL corpora, `wikitext103`/`c4_slice`), same x-axis, same final-checkpoint filter.
+  - **The right axis is inverted** (`ax2.invert_yaxis()`) so "up = better" holds simultaneously on both axes — bpb is a loss-like metric (lower is better) while accuracy is a score-like metric (higher is better); without inverting, a viewer would see the two lines move in visually opposite directions even when the underlying story (both improving with scale) is the same. This is the one twin-axis chart in the project where an inversion is load-bearing for readability, so it's called out explicitly in the function's own docstring, not just here.
+  - `_color_for_dataset` extended with fixed entries for `lambada` (`tab:red`) and `gsm8k` (`tab:purple`) — previously these fell through to the fallback cycle, but the headline figure is the one place they now always appear alongside the three Sprint-2 MC benchmarks, so giving them a stable identity matters the same way it did for `arc_easy`/`hellaswag`/`mmlu`. PPL corpora (`wikitext103`/`c4_slice`) are left on the fallback cycle since they aren't otherwise fixed-colored elsewhere in the codebase.
+  - `ladderctl figures` now writes two more files alongside the three Sprint 1/2 figures — `trajectory_bpb.png` (`trajectory_chart(runs, out_path, metric="bpb")`, reusing the function's existing generic `metric` parameter unchanged — no new code needed there beyond removing the hardcoded `ax.set_ylim(0, 1)` for non-accuracy metrics, since bpb has no fixed range) and `headline.png` — all unconditionally, same pattern as the others (empty/filtered-out input renders an empty-but-valid chart rather than erroring).
 
 ---
 
@@ -252,6 +262,7 @@ predictions(request_hash PK, model_id, revision, payload_json)
 ```
 ladderctl run      --model pythia-160m --revision step143000 --dataset arc_easy \
                    --variant arc_easy/mc_letter_v1 --evaluator loglik_mc [--limit N]
+ladderctl run      --model pythia-160m --dataset wikitext103 --evaluator perplexity  # no --variant
 ladderctl sweep run sweeps/main.yaml [--db ./ladder.db]   # resumable by default
 ladderctl results  [--dataset ...] [--model ...]
 ladderctl show     <run_id>
@@ -261,6 +272,7 @@ ladderctl figures
 ```
 
 All commands take `--db` (default `./ladder.db`). Nonzero exit on failure.
+`--evaluator` accepts all four registered evaluators (`loglik_mc`, `perplexity`, `cloze`, `generative`, §8 Phase 3.6); `--variant` is optional (`None` default) and must be omitted for `--evaluator perplexity`, required for the other three.
 
 ---
 
