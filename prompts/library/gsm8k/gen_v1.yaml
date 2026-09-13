@@ -1,0 +1,10 @@
+id: gsm8k/gen_v1
+task_family: generative
+template: |
+  Question: {question}
+  Solve step by step, then give the final answer as "Final answer: <number>".
+  Answer:
+continuation_style: null
+num_fewshot: 0
+max_new_tokens: 256
+stop: ["Question:"]

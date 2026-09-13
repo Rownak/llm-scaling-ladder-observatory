@@ -137,6 +137,32 @@ def test_render_golden_first_lambada_fixture_example():
     assert request.gen_params is None
 
 
+def test_load_variant_gsm8k_gen_v1():
+    variant = load_variant("gsm8k/gen_v1")
+    assert variant.id == "gsm8k/gen_v1"
+    assert variant.task_family == "generative"
+    assert variant.continuation_style is None
+    assert variant.num_fewshot == 0
+    assert variant.max_new_tokens == 256
+    assert variant.stop == ["Question:"]
+
+
+def test_render_golden_first_gsm8k_fixture_example():
+    loader = get_loader("gsm8k")
+    example = next(loader.load("fixture", limit=1))
+    variant = load_variant("gsm8k/gen_v1")
+
+    request = render(example, variant)
+
+    assert "Natalia sold clips" in request.prompt
+    assert 'Final answer: <number>' in request.prompt
+    assert request.example_id == example.example_id
+    assert request.prompt_variant_id == "gsm8k/gen_v1"
+    assert request.kind == "generate"
+    assert request.continuations is None
+    assert request.gen_params == {"max_new_tokens": 256, "stop": ["Question:"], "temperature": 0.0}
+
+
 def test_render_is_pure_no_shared_mutation():
     loader = get_loader("arc_easy")
     example = next(loader.load("fixture", limit=1))

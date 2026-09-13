@@ -447,3 +447,61 @@ class LambadaLoader(DatasetLoader):
 
 
 register("lambada", LambadaLoader)
+
+
+class Gsm8kLoader(DatasetLoader):
+    """GSM8K (openai/gsm8k, config 'main').
+
+    Normalized generative payload: {question, answer_number} (architecture.md
+    §4). GSM8K's raw `answer` field is a full chain-of-thought solution
+    ending in a literal `"#### <number>"` line — the loader extracts just the
+    final number at load time so evaluators never need to parse reasoning
+    text to find the gold answer (only the *model's* generation needs that,
+    via `metrics`'s extraction function).
+    """
+
+    name = "gsm8k"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "gsm8k.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("openai/gsm8k", "main", split=split)
+        count = 0
+        for i, row in enumerate(ds):
+            if limit is not None and count >= limit:
+                return
+            yield self._to_example(row, split, i)
+            count += 1
+
+    @staticmethod
+    def _to_example(row: dict, split: str, index: int) -> Example:
+        """Convert one raw openai/gsm8k row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from `openai/gsm8k`, carrying `question`/`answer`.
+            split: Split label to record on the resulting `Example`.
+            index: Row position, used to build a stable `example_id` (the
+                dataset carries no native row ID).
+
+        Returns:
+            An `Example` with payload {question, answer_number} — the gold
+            number parsed from the `"#### <number>"` line at the end of
+            `answer`, with any thousands-separator commas stripped.
+        """
+        answer_text = row["answer"]
+        _, _, tail = answer_text.rpartition("####")
+        answer_number = float(tail.strip().replace(",", ""))
+        return Example(
+            dataset="gsm8k",
+            split=split,
+            example_id=f"gsm8k-{index}",
+            payload={"question": row["question"], "answer_number": answer_number},
+        )
+
+
+register("gsm8k", Gsm8kLoader)

@@ -1,13 +1,14 @@
 """Evaluators: render -> client call -> score -> `ExampleResult`.
 
-Sprint 1 implements `loglik_mc`; `perplexity` and `cloze` arrive in Sprint 3
-Phases 3.2/3.4; `generative` arrives later in Sprint 3 (architecture.md §6).
+Sprint 1 implements `loglik_mc`; `perplexity`, `cloze`, and `generative`
+arrive in Sprint 3 Phases 3.2/3.4/3.5 (architecture.md §6).
 """
 
 import math
 from collections.abc import Iterator
 
 from ladder.client import GenParams, LoglikResult, ModelClient
+from ladder.metrics import extract_answer_number
 from ladder.prompts import PromptVariant, render
 from ladder.records import Example, ExampleResult, Prediction
 from ladder.storage import PredictionCache
@@ -369,3 +370,63 @@ def _cached_generate(
         ),
     )
     return generation
+
+
+def generative(
+    run_id: str,
+    examples: Iterator[Example],
+    variant: PromptVariant,
+    client: ModelClient,
+    cache: PredictionCache,
+    model_id: str,
+    revision: str,
+) -> Iterator[ExampleResult]:
+    """Score generative examples (GSM8K): generate -> extract a number -> exact match.
+
+    For each example: render its `RenderedRequest` via `variant` — unlike
+    `cloze`, the generation budget/stop sequences come from the variant's own
+    `max_new_tokens`/`stop` (a property of the prompt/answer format, not the
+    per-example target, since GSM8K answers are full chain-of-thought
+    solutions rather than a single known-length word), carried on
+    `request.gen_params` by `prompts.render`. Generates greedily, then runs
+    `metrics.extract_answer_number` (pattern-first, last-number fallback) on
+    the raw generation. `correct` is an exact match between the extracted
+    number and `example.payload["answer_number"]` — `None` extraction (no
+    number anywhere in the generation) is always incorrect, never raises.
+
+    Args:
+        run_id: ID of the `RunRecord` these results belong to.
+        examples: `Example`s to evaluate, each with `payload["question"]`/`["answer_number"]`.
+        variant: `PromptVariant` used to render each example (supplies
+            `max_new_tokens`/`stop` via `gen_params`).
+        client: `ModelClient` used to generate on a cache miss.
+        cache: `PredictionCache` consulted before every client call.
+        model_id: Registry model_id, part of the cache key (see `loglik_mc`).
+        revision: Model checkpoint/revision, part of the cache key.
+
+    Yields:
+        One `ExampleResult` per input example; `detail` carries the raw
+        generation, the extracted number, and the gold answer.
+    """
+    for example in examples:
+        request = render(example, variant)
+        assert request.gen_params is not None  # generative always renders gen_params
+
+        gen_params = GenParams(**request.gen_params)
+        generation = _cached_generate(client, cache, model_id, revision, request.prompt, gen_params)
+        extracted = extract_answer_number(generation)
+
+        answer_number = example.payload["answer_number"]
+        is_correct = extracted is not None and extracted == answer_number
+
+        yield ExampleResult(
+            run_id=run_id,
+            example_id=example.example_id,
+            correct=is_correct,
+            score=1.0 if is_correct else 0.0,
+            detail={
+                "answer_number": answer_number,
+                "generation": generation,
+                "extracted_number": extracted,
+            },
+        )

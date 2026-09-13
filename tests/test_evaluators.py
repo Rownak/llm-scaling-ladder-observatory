@@ -1,18 +1,23 @@
-"""loglik_mc/perplexity/cloze evaluators: render -> client call -> score -> ExampleResult (architecture.md §6)."""
+"""loglik_mc/perplexity/cloze/generative evaluators: render -> client call -> score -> ExampleResult (architecture.md §6)."""
 
 import math
 
 from ladder.client import GenParams, LoglikResult, ModelClient, TokenNLLs, get_client
 from ladder.datasets import get_loader
-from ladder.evaluators import cloze, loglik_mc, perplexity
+from ladder.evaluators import cloze, generative, loglik_mc, perplexity
 from ladder.metrics import acc, perplexity_metrics
 from ladder.prompts import load_variant
+from ladder.prompts import render as render_request
 from ladder.records import Example, ExampleResult
 from ladder.storage import PredictionCache, connect
 
 
 def _cache(tmp_path, name="ladder.db") -> PredictionCache:
     return PredictionCache(connect(tmp_path / name))
+
+
+def render_prompt(example: Example, variant) -> str:
+    return render_request(example, variant).prompt
 
 
 def test_loglik_mc_yields_one_result_per_example(tmp_path):
@@ -331,3 +336,107 @@ def test_cloze_max_new_tokens_scales_with_target_word_count(tmp_path):
 
     assert client.seen_params is not None
     assert client.seen_params.max_new_tokens == _CLOZE_TOKENS_PER_TARGET_WORD * 3
+
+
+# --- generative (GSM8K) -----------------------------------------------------
+
+
+def _gsm8k_example(question: str, answer_number: float, example_id: str = "gsm8k-x") -> Example:
+    return Example(
+        dataset="gsm8k", split="fixture", example_id=example_id, payload={"question": question, "answer_number": answer_number}
+    )
+
+
+def test_generative_correct_when_extracted_number_matches(tmp_path):
+    example = _gsm8k_example("What is 2 + 2?", 4.0)
+    variant = load_variant("gsm8k/gen_v1")
+    request_prompt = render_prompt(example, variant)
+    client = _RiggedClient({request_prompt: "2 + 2 = 4. Final answer: 4"})
+
+    (result,) = list(generative("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.correct is True
+    assert result.score == 1.0
+    assert result.detail["extracted_number"] == 4.0
+    assert result.detail["answer_number"] == 4.0
+
+
+def test_generative_incorrect_when_extracted_number_differs(tmp_path):
+    example = _gsm8k_example("What is 2 + 2?", 4.0)
+    variant = load_variant("gsm8k/gen_v1")
+    request_prompt = render_prompt(example, variant)
+    client = _RiggedClient({request_prompt: "2 + 2 = 5. Final answer: 5"})
+
+    (result,) = list(generative("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.correct is False
+    assert result.score == 0.0
+    assert result.detail["extracted_number"] == 5.0
+
+
+def test_generative_incorrect_when_no_number_extracted(tmp_path):
+    example = _gsm8k_example("What is 2 + 2?", 4.0)
+    variant = load_variant("gsm8k/gen_v1")
+    request_prompt = render_prompt(example, variant)
+    client = _RiggedClient({request_prompt: "I'm not sure how to solve this."})
+
+    (result,) = list(generative("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert result.correct is False
+    assert result.detail["extracted_number"] is None
+
+
+def test_generative_uses_variant_gen_params(tmp_path):
+    example = _gsm8k_example("What is 2 + 2?", 4.0)
+    variant = load_variant("gsm8k/gen_v1")
+    request_prompt = render_prompt(example, variant)
+
+    class _CapturingClient(_RiggedClient):
+        def __init__(self):
+            super().__init__({request_prompt: "Final answer: 4"})
+            self.seen_params: GenParams | None = None
+
+        def generate(self, prompt: str, params: GenParams) -> str:
+            self.seen_params = params
+            return super().generate(prompt, params)
+
+    client = _CapturingClient()
+    list(generative("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    assert client.seen_params is not None
+    assert client.seen_params.max_new_tokens == variant.max_new_tokens
+    assert client.seen_params.stop == variant.stop
+    assert client.seen_params.temperature == 0.0
+
+
+def test_generative_accuracy_hand_computed_three_of_five(tmp_path):
+    # Sprint 3, Phase 3.5: accuracy fixture worked by hand. 5 examples, rigged
+    # generations: 3 extract to the correct answer_number, 2 don't.
+    #   ex0: answer=4.0   generation="Final answer: 4"  -> extracted 4.0  -> match
+    #   ex1: answer=10.0  generation="Final answer: 10" -> extracted 10.0 -> match
+    #   ex2: answer=7.0   generation="Final answer: 9"  -> extracted 9.0  -> no match
+    #   ex3: answer=100.0 generation="#### 100"          -> extracted 100.0 -> match
+    #   ex4: answer=3.0   generation="not sure"          -> extracted None -> no match
+    # acc = 3/5 = 0.6
+    variant = load_variant("gsm8k/gen_v1")
+    examples = [
+        _gsm8k_example("Q0?", 4.0, "ex0"),
+        _gsm8k_example("Q1?", 10.0, "ex1"),
+        _gsm8k_example("Q2?", 7.0, "ex2"),
+        _gsm8k_example("Q3?", 100.0, "ex3"),
+        _gsm8k_example("Q4?", 3.0, "ex4"),
+    ]
+    generations = {
+        render_prompt(examples[0], variant): "Final answer: 4",
+        render_prompt(examples[1], variant): "Final answer: 10",
+        render_prompt(examples[2], variant): "Final answer: 9",
+        render_prompt(examples[3], variant): "#### 100",
+        render_prompt(examples[4], variant): "not sure",
+    }
+    client = _RiggedClient(generations)
+
+    results = list(generative("run-1", examples, variant, client, _cache(tmp_path), "dummy", "main"))
+    accuracy = acc(results)
+
+    assert accuracy == 0.6
+    assert sum(1 for r in results if r.correct) == 3

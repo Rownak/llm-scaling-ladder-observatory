@@ -2,7 +2,7 @@
 
 import math
 
-from ladder.metrics import acc, acc_norm, perplexity_metrics
+from ladder.metrics import acc, acc_norm, extract_answer_number, perplexity_metrics
 from ladder.records import ExampleResult
 
 
@@ -138,3 +138,68 @@ def test_perplexity_metrics_empty_results():
     assert metrics["n_bytes"] == 0.0
     assert metrics["ppl"] == float("inf")
     assert metrics["bpb"] == 0.0
+
+
+# --- extract_answer_number (Sprint 3, Phase 3.5) ----------------------------
+#
+# Extraction fixture set — pattern-first ("Final answer:" / "#### N"), then
+# last-number fallback. Each case's expected value is spelled out below.
+
+
+def test_extract_answer_number_final_answer_cue():
+    # "Final answer:" cue present -> take the number right after it, ignoring
+    # earlier numbers in the reasoning. Expected: 8.0
+    text = "She had 3 apples then bought 5 more. Final answer: 8"
+    assert extract_answer_number(text) == 8.0
+
+
+def test_extract_answer_number_hashes_cue():
+    # GSM8K-native "#### N" cue, no "Final answer:" present. Expected: 1234.0
+    # (comma thousands-separator stripped).
+    text = "Total receipts across the year sum to #### 1,234"
+    assert extract_answer_number(text) == 1234.0
+
+
+def test_extract_answer_number_final_answer_cue_wins_over_hashes():
+    # Both cues present, on different lines -> "Final answer:" (checked
+    # first) wins over the earlier "#### 5". Expected: 8.0, not 5.0.
+    text = "#### 5\nFinal answer: 8"
+    assert extract_answer_number(text) == 8.0
+
+
+def test_extract_answer_number_negative_number():
+    # No cue phrase; last number in free text is negative. Expected: -50.0
+    text = "He lost $-50 on the trade."
+    assert extract_answer_number(text) == -50.0
+
+
+def test_extract_answer_number_comma_grouped_no_cue():
+    # No cue phrase; comma thousands-separator must be stripped before
+    # parsing. Expected: 12345.0
+    text = "The total sales were 12,345 units this quarter."
+    assert extract_answer_number(text) == 12345.0
+
+
+def test_extract_answer_number_decimal_no_cue():
+    # No cue phrase; a decimal number. Expected: 19.99
+    text = "The price is $19.99 after the discount was applied."
+    assert extract_answer_number(text) == 19.99
+
+
+def test_extract_answer_number_mid_reasoning_last_number_fallback():
+    # No cue phrase; several numbers appear during reasoning, no explicit
+    # flag for which is final -> falls back to the last one. Expected: 21.0
+    text = "Step 1: 12 - 5 = 7. Step 2: 7 * 3 = 21. That's the result."
+    assert extract_answer_number(text) == 21.0
+
+
+def test_extract_answer_number_no_number_returns_none():
+    # No number anywhere in the text -> None, not an exception or 0.
+    text = "I'm not sure how to solve this one."
+    assert extract_answer_number(text) is None
+
+
+def test_extract_answer_number_negative_decimal_with_cue():
+    # "Final Answer:" cue, case-insensitive, negative decimal. Expected: -12.5
+    text = "After accounting for the loss, Final Answer: -12.5"
+    assert extract_answer_number(text) == -12.5

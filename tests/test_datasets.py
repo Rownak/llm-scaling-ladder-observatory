@@ -3,6 +3,7 @@
 from ladder.datasets import (
     ArcEasyLoader,
     C4SliceLoader,
+    Gsm8kLoader,
     HellaSwagLoader,
     LambadaLoader,
     MmluLoader,
@@ -368,3 +369,66 @@ def test_lambada_to_example_splits_last_word_as_target():
     assert ex.payload["context"] == "The dog chased the ball across the"
     assert ex.payload["target"] == "yard"
     assert ex.example_id == "lambada-0"
+
+
+# --- GSM8K -------------------------------------------------------------
+
+
+def test_get_loader_returns_gsm8k_loader():
+    loader = get_loader("gsm8k")
+    assert isinstance(loader, Gsm8kLoader)
+
+
+def test_gsm8k_fixture_tier_yields_examples():
+    loader = get_loader("gsm8k")
+    examples = list(loader.load("fixture"))
+    assert len(examples) == 8
+    for ex in examples:
+        assert isinstance(ex, Example)
+
+
+def test_gsm8k_fixture_tier_schema():
+    loader = get_loader("gsm8k")
+    for ex in loader.load("fixture"):
+        assert ex.dataset == "gsm8k"
+        assert ex.split == "fixture"
+        assert isinstance(ex.example_id, str) and ex.example_id.startswith("gsm8k-")
+        assert set(ex.payload.keys()) == {"question", "answer_number"}
+        assert isinstance(ex.payload["question"], str) and ex.payload["question"]
+        assert isinstance(ex.payload["answer_number"], float)
+
+
+def test_gsm8k_fixture_tier_stable_ids_are_unique():
+    loader = get_loader("gsm8k")
+    ids = [ex.example_id for ex in loader.load("fixture")]
+    assert len(ids) == len(set(ids))
+
+
+def test_gsm8k_fixture_tier_respects_limit():
+    loader = get_loader("gsm8k")
+    examples = list(loader.load("fixture", limit=3))
+    assert len(examples) == 3
+
+
+def test_gsm8k_fixture_tier_ids_are_stable_across_loads():
+    loader = get_loader("gsm8k")
+    ids_first = [ex.example_id for ex in loader.load("fixture")]
+    ids_second = [ex.example_id for ex in loader.load("fixture")]
+    assert ids_first == ids_second
+
+
+def test_gsm8k_to_example_extracts_number_after_hashes():
+    row = {
+        "question": "If a train travels 60 miles in 2 hours, what is its speed?",
+        "answer": "The train travels 60 miles in 2 hours.\nSpeed = 60 / 2 = 30 miles per hour.\n#### 30",
+    }
+    ex = Gsm8kLoader._to_example(row, "fixture", 0)
+    assert ex.payload["question"] == row["question"]
+    assert ex.payload["answer_number"] == 30.0
+    assert ex.example_id == "gsm8k-0"
+
+
+def test_gsm8k_to_example_strips_commas_from_answer():
+    row = {"question": "How many total?", "answer": "Reasoning...\n#### 1,234"}
+    ex = Gsm8kLoader._to_example(row, "fixture", 1)
+    assert ex.payload["answer_number"] == 1234.0

@@ -6,10 +6,21 @@ aggregate `metrics` dict stored on a `RunRecord`.
 """
 
 import math
+import re
 
 from ladder.records import ExampleResult
 
 _NATS_PER_BIT = math.log(2)  # converts nats to bits for bpb
+
+# Matches a signed, comma-grouped, optionally-decimal number, e.g. "-1,234.5".
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+# Cue phrases GSM8K-style generations use to flag the final answer explicitly,
+# checked in order — the first one present wins (architecture.md §6).
+_ANSWER_CUE_PATTERNS = [
+    re.compile(r"Final answer:\s*(-?\d[\d,]*(?:\.\d+)?)", re.IGNORECASE),
+    re.compile(r"####\s*(-?\d[\d,]*(?:\.\d+)?)"),
+]
 
 
 def acc(results: list[ExampleResult]) -> float:
@@ -94,3 +105,39 @@ def perplexity_metrics(results: list[ExampleResult]) -> dict[str, float]:
         "n_scored_tokens": float(n_scored_tokens),
         "n_bytes": float(n_bytes),
     }
+
+
+def extract_answer_number(text: str) -> float | None:
+    """Extract the model's final numeric answer from a generative response (architecture.md §6).
+
+    Pattern-first, last-number fallback:
+
+    1. If `text` contains an explicit answer cue (`"Final answer: N"`, case-
+       insensitive, or a GSM8K-style `"#### N"` line), the number following
+       the *last* such cue wins — a generation that reasons its way through
+       several numbers but explicitly flags its answer should be scored on
+       that flagged number, not whatever number happens to appear last in
+       free text.
+    2. Otherwise, falls back to the last number appearing anywhere in
+       `text` — the closest a free-form chain-of-thought response gets to
+       "the final answer" without an explicit cue.
+
+    Comma thousands-separators are stripped before parsing (`"1,234"` ->
+    `1234.0`); negative numbers and decimals are both recognized.
+
+    Args:
+        text: Raw model generation to extract a numeric answer from.
+
+    Returns:
+        The extracted number as a float, or None if `text` contains no
+        number at all.
+    """
+    for pattern in _ANSWER_CUE_PATTERNS:
+        matches = pattern.findall(text)
+        if matches:
+            return float(matches[-1].replace(",", ""))
+
+    matches = _NUMBER_RE.findall(text)
+    if not matches:
+        return None
+    return float(matches[-1].replace(",", ""))
