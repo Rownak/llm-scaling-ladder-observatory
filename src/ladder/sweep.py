@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from ladder import __version__
 from ladder.client import ModelClient, get_client
 from ladder.datasets import get_loader
-from ladder.metrics import acc, acc_norm
+from ladder.metrics import acc, acc_norm, perplexity_metrics
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
 from ladder.storage import PredictionCache, list_runs, save_example_results, save_run
@@ -34,9 +34,20 @@ def _default_evaluators() -> dict[str, Callable]:
         Mapping from evaluator name (as used in sweep targets / `RunRecord.evaluator`)
         to its `ladder.evaluators` function.
     """
-    from ladder.evaluators import loglik_mc
+    from ladder.evaluators import cloze, generative, loglik_mc, perplexity
 
-    return {"loglik_mc": loglik_mc}
+    return {
+        "loglik_mc": loglik_mc,
+        "perplexity": perplexity,
+        "cloze": cloze,
+        "generative": generative,
+    }
+
+
+# Evaluators whose function signature omits `variant` entirely (architecture.md
+# §6) — `perplexity` has no prompt to render, since PPL documents are scored
+# directly, not through a `PromptVariant` template.
+_NO_VARIANT_EVALUATORS = {"perplexity"}
 
 
 class SweepTarget(BaseModel):
@@ -44,13 +55,14 @@ class SweepTarget(BaseModel):
 
     Attributes:
         dataset: Registry dataset name.
-        variant: Prompt variant id (`prompts/library/` path, no .yaml suffix).
+        variant: Prompt variant id (`prompts/library/` path, no .yaml suffix),
+            or None for `evaluator="perplexity"` (no prompt to render).
         evaluator: Evaluator name (key into the evaluator registry, e.g. "loglik_mc").
         split: Dataset split to evaluate.
     """
 
     dataset: str
-    variant: str
+    variant: str | None = None
     evaluator: str
     split: str = "test"
 
@@ -93,7 +105,7 @@ class SweepRun(BaseModel):
         model_id: Registry model_id.
         revision: Checkpoint/revision.
         dataset: Registry dataset name.
-        variant: Prompt variant id.
+        variant: Prompt variant id, or None for `evaluator="perplexity"`.
         evaluator: Evaluator name.
         split: Dataset split.
         limit: Max examples for this run, or None.
@@ -105,7 +117,7 @@ class SweepRun(BaseModel):
     model_id: str
     revision: str
     dataset: str
-    variant: str
+    variant: str | None
     evaluator: str
     split: str
     limit: int | None
@@ -272,17 +284,23 @@ def _execute_one(conn, run: SweepRun, client: ModelClient, evaluators: dict[str,
         evaluator_fn = evaluators[run.evaluator]
         loader = get_loader(run.dataset)
         examples = list(loader.load(run.split, limit=run.limit))
-        prompt_variant = load_variant(run.variant)
         cache = PredictionCache(conn)
 
-        results = list(
-            evaluator_fn(run_id, examples, prompt_variant, client, cache, run.model_id, run.revision)
-        )
+        if run.evaluator in _NO_VARIANT_EVALUATORS:
+            results = list(evaluator_fn(run_id, examples, client, cache, run.model_id, run.revision))
+        else:
+            prompt_variant = load_variant(run.variant)
+            results = list(
+                evaluator_fn(run_id, examples, prompt_variant, client, cache, run.model_id, run.revision)
+            )
         save_example_results(conn, results)
 
-        metrics = {"acc": acc(results)}
-        if run.evaluator == "loglik_mc":
-            metrics["acc_norm"] = acc_norm(results)
+        if run.evaluator == "perplexity":
+            metrics = perplexity_metrics(results)
+        else:
+            metrics = {"acc": acc(results)}
+            if run.evaluator == "loglik_mc":
+                metrics["acc_norm"] = acc_norm(results)
 
         run_record.status = "done"
         run_record.metrics = metrics
@@ -314,7 +332,8 @@ def run_sweep(conn, spec: SweepSpec, evaluators: dict[str, Callable] | None = No
         conn: Open DB connection from `storage.connect`.
         spec: The sweep spec to execute.
         evaluators: Evaluator-name -> function map; defaults to the full
-            registry (`loglik_mc`). Overridable for tests.
+            registry (`loglik_mc`, `perplexity`, `cloze`, `generative`).
+            Overridable for tests.
 
     Returns:
         `RunRecord`s actually executed this call, in execution order —

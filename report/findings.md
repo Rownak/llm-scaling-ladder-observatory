@@ -76,12 +76,74 @@ bits-per-byte is not plotted yet — perplexity-from-scratch (WikiText-103 /
 C4) is Sprint 3 scope; the twin-axis PPL/accuracy comparison described below
 waits for that.
 
-## PPL vs. accuracy across the ladder (placeholder — later sprint)
+## Sprint 3 — Perplexity, full format coverage, headline figure
+
+Sliding-window perplexity (`HFClient.token_nlls`, window 1024/stride 512, no
+token scored twice) plus the two missing eval formats — cloze (LAMBADA,
+greedy-generate the final word, exact match) and generative (GSM8K,
+generate → `metrics.extract_answer_number` → exact match) — bring the sweep
+to all 7 targets: `arc_easy`, `hellaswag`, `mmlu`, `lambada`, `gsm8k`
+(accuracy-style) and `wikitext103`, `c4_slice` (perplexity-style).
+
+**Why bits-per-byte, not raw perplexity, is the cross-model metric.** Raw
+`ppl = exp(mean NLL per token)` is only meaningful within one tokenizer: two
+models with different vocabularies segment the same text into a different
+number of tokens, so a lower PPL can reflect a coarser tokenizer rather than
+a better model. `bpb = (total NLL in bits) / (total UTF-8 bytes of the
+scored text)` fixes this — byte count is tokenizer-independent, so bpb is
+the metric that's actually comparable across the Pythia ladder (and, later,
+across frameworks in the parity study). `metrics.perplexity_metrics` reports
+both; only `bpb` is ever plotted across models, `ppl` is per-model
+diagnostic only.
+
+The training-trajectory figure (`report/figures/trajectory_bpb.png`) now
+also covers bpb-over-training, reusing `figures.trajectory_chart`'s existing
+`metric` parameter (`metric="bpb"`) unchanged — the same "one line per
+(model, dataset) pair across intermediate checkpoints" view Sprint 2 built
+for accuracy, now showing PPL corpora improve smoothly within a single
+model's training run, not just across the model-size ladder.
+
+**Headline figure** (`ladderctl figures` → `report/figures/headline.png`,
+`figures.headline_figure`): log10(params) on the x-axis, shared across two
+y-axes — accuracy (left) for the 5 accuracy-style benchmarks with a dashed
+chance line per benchmark, and bpb (right, axis inverted so "up = better"
+holds on both axes at once) for the 2 PPL corpora. This is the one plot the
+whole project's thesis lives or dies on: does bpb improve smoothly with
+scale while "smooth" benchmarks (LAMBADA, ARC-Easy, HellaSwag) track it, and
+do "emergent" benchmarks (MMLU, GSM8K) sit flat at their chance line
+regardless of scale?
+
+**GSM8K-at-chance is an expected finding, not a bug.** GSM8K's chance rate
+for free-form numeric generation is effectively 0% (`_CHANCE_RATE["gsm8k"] =
+0.0` in `figures.py`) — there's no multiple-choice guessing floor the way
+there is for 4-option MC. Base Pythia models at this scale (70M–1B,
+non-instruction-tuned) are expected to solve close to 0% of GSM8K regardless
+of parameter count: multi-step arithmetic reasoning is a capability that
+emerges at much larger scale (and typically requires instruction tuning) —
+the ladder here tops out at 1B specifically to make that floor visible
+rather than to climb past it. A flat ~0% GSM8K line across all four model
+sizes in the headline figure is therefore the *correct* result, sitting
+alongside bpb's smooth improvement as the contrast the figure exists to show.
+
+**Status: mechanism proven on `sweeps/main.yaml`'s spec, real 7-target sweep
+not yet run.** `sweeps/main.yaml` now declares all 7 targets (3 MC + LAMBADA
++ GSM8K + WikiText-103 + C4 slice) × the full 4-model × 3-checkpoint grid.
+As with Sprint 2's figures, the pipeline itself — `sweep run` → DB →
+`ladderctl figures` producing `headline.png` — is proven offline via
+DummyClient + fixtures
+(`tests/test_cli_integration.py::test_all_format_mini_sweep_then_headline_figure_renders`
+covers one target per evaluator type end-to-end). The spec has not yet been
+executed against real Pythia checkpoints on hardware; that run — and the
+first real headline figure — is the next step once GPU time is available.
+
+## PPL vs. accuracy across the ladder (placeholder — pending real sweep)
 
 Log-params vs. accuracy for all five benchmarks, with bits-per-byte on a twin
 axis: perplexity improving smoothly across the ladder while "emergent"
 benchmarks (MMLU, GSM8K) stay at chance and "smooth" benchmarks (LAMBADA,
-ARC-Easy, HellaSwag) track it.
+ARC-Easy, HellaSwag) track it. Figure-generation mechanism is done
+(`figures.headline_figure`, above); this section fills in once
+`sweeps/main.yaml` has run on real hardware.
 
 ## Parity vs. lm-evaluation-harness (placeholder — later sprint)
 

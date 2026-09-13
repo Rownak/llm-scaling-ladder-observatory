@@ -137,6 +137,44 @@ def test_run_sweep_resume_skips_done_runs_with_zero_recomputation(tmp_path):
     assert stored_keys == done_keys
 
 
+def test_run_sweep_executes_perplexity_target_with_no_variant(tmp_path):
+    # Sprint 3 Phase 3.6: `perplexity` targets carry no `variant` at all (the
+    # evaluator has no prompt to render), so `SweepTarget.variant` must accept
+    # None and the executor must call `perplexity` without a variant arg.
+    conn = connect(tmp_path / "ladder.db")
+    spec = SweepSpec(
+        models=[SweepModel(model_id="dummy", revisions=["main"])],
+        targets=[SweepTarget(dataset="wikitext103", evaluator="perplexity", split="fixture")],
+        limit=3,
+    )
+    executed = run_sweep(conn, spec)
+
+    assert len(executed) == 1
+    run_record = executed[0]
+    assert run_record.status == "done"
+    assert run_record.prompt_variant_id is None
+    assert "bpb" in run_record.metrics
+    assert "ppl" in run_record.metrics
+    assert "acc" not in run_record.metrics
+
+
+def test_run_sweep_executes_cloze_and_generative_targets(tmp_path):
+    conn = connect(tmp_path / "ladder.db")
+    spec = SweepSpec(
+        models=[SweepModel(model_id="dummy", revisions=["main"])],
+        targets=[
+            SweepTarget(dataset="lambada", variant="lambada/cloze_v1", evaluator="cloze", split="fixture"),
+            SweepTarget(dataset="gsm8k", variant="gsm8k/gen_v1", evaluator="generative", split="fixture"),
+        ],
+        limit=3,
+    )
+    executed = run_sweep(conn, spec)
+
+    assert len(executed) == 2
+    assert all(r.status == "done" for r in executed)
+    assert all("acc" in r.metrics for r in executed)
+
+
 def test_run_sweep_continues_after_a_failed_run(tmp_path):
     conn = connect(tmp_path / "ladder.db")
     spec = SweepSpec(
