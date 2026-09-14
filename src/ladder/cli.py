@@ -16,7 +16,7 @@ from ladder import __version__
 from ladder.client import get_client
 from ladder.datasets import get_loader
 from ladder.evaluators import cloze, generative, loglik_mc, perplexity
-from ladder.figures import accuracy_bar_chart, headline_figure, scaling_curve_chart, trajectory_chart
+from ladder.figures import accuracy_grid_chart, headline_figure, scaling_curve_chart, trajectory_chart
 from ladder.metrics import acc, acc_norm, perplexity_metrics
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
@@ -262,7 +262,7 @@ def figures(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = out_dir / "accuracy_per_run.png"
-    accuracy_bar_chart(runs, out_path)
+    accuracy_grid_chart(runs, out_path)
     typer.echo(f"Wrote {out_path}")
 
     out_path = out_dir / "scaling_curve.png"
