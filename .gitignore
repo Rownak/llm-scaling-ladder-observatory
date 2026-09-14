@@ -223,3 +223,6 @@ execution_logs/
 tasks.md
 CLAUDE.md
 .claude/
+
+# Data
+ladder.db
