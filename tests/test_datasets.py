@@ -1,6 +1,15 @@
 """Dataset loaders: fixture-tier schema + stable IDs (architecture.md §4)."""
 
-from ladder.datasets import ArcEasyLoader, HellaSwagLoader, MmluLoader, get_loader
+from ladder.datasets import (
+    ArcEasyLoader,
+    C4SliceLoader,
+    Gsm8kLoader,
+    HellaSwagLoader,
+    LambadaLoader,
+    MmluLoader,
+    WikiTextLoader,
+    get_loader,
+)
 from ladder.records import Example
 
 
@@ -201,3 +210,225 @@ def test_mmlu_to_example_uses_content_hash_id():
     # Same question text -> same ID (reproducible across loads/processes).
     ex2 = MmluLoader._to_example(row, "fixture")
     assert ex.example_id == ex2.example_id
+
+
+# --- WikiText-103 ----------------------------------------------------------
+
+
+def test_get_loader_returns_wikitext_loader():
+    loader = get_loader("wikitext103")
+    assert isinstance(loader, WikiTextLoader)
+
+
+def test_wikitext_fixture_tier_yields_examples():
+    loader = get_loader("wikitext103")
+    examples = list(loader.load("fixture"))
+    assert len(examples) == 5
+    for ex in examples:
+        assert isinstance(ex, Example)
+
+
+def test_wikitext_fixture_tier_schema():
+    loader = get_loader("wikitext103")
+    for ex in loader.load("fixture"):
+        assert ex.dataset == "wikitext103"
+        assert ex.split == "fixture"
+        assert isinstance(ex.example_id, str) and ex.example_id.startswith("wikitext103-")
+        assert set(ex.payload.keys()) == {"text"}
+        assert isinstance(ex.payload["text"], str) and ex.payload["text"]
+
+
+def test_wikitext_fixture_tier_stable_ids_are_unique():
+    loader = get_loader("wikitext103")
+    ids = [ex.example_id for ex in loader.load("fixture")]
+    assert len(ids) == len(set(ids))
+
+
+def test_wikitext_fixture_tier_respects_limit():
+    loader = get_loader("wikitext103")
+    examples = list(loader.load("fixture", limit=2))
+    assert len(examples) == 2
+
+
+def test_wikitext_fixture_tier_ids_are_stable_across_loads():
+    loader = get_loader("wikitext103")
+    ids_first = [ex.example_id for ex in loader.load("fixture")]
+    ids_second = [ex.example_id for ex in loader.load("fixture")]
+    assert ids_first == ids_second
+
+
+# --- C4 slice ----------------------------------------------------------
+
+
+def test_get_loader_returns_c4_slice_loader():
+    loader = get_loader("c4_slice")
+    assert isinstance(loader, C4SliceLoader)
+
+
+def test_c4_slice_fixture_tier_yields_examples():
+    loader = get_loader("c4_slice")
+    examples = list(loader.load("fixture"))
+    assert len(examples) == 5
+    for ex in examples:
+        assert isinstance(ex, Example)
+
+
+def test_c4_slice_fixture_tier_schema():
+    loader = get_loader("c4_slice")
+    for ex in loader.load("fixture"):
+        assert ex.dataset == "c4_slice"
+        assert ex.split == "fixture"
+        assert isinstance(ex.example_id, str) and ex.example_id.startswith("c4_slice-")
+        assert set(ex.payload.keys()) == {"text"}
+        assert isinstance(ex.payload["text"], str) and ex.payload["text"]
+
+
+def test_c4_slice_fixture_tier_stable_ids_are_unique():
+    loader = get_loader("c4_slice")
+    ids = [ex.example_id for ex in loader.load("fixture")]
+    assert len(ids) == len(set(ids))
+
+
+def test_c4_slice_fixture_tier_respects_limit():
+    loader = get_loader("c4_slice")
+    examples = list(loader.load("fixture", limit=2))
+    assert len(examples) == 2
+
+
+def test_c4_slice_determinism_two_loads_identical_id_sequence():
+    # Sprint 3, Phase 3.3: "two loads -> identical example_id sequence" is the
+    # sprint-specified determinism check for the fixed-seed C4 slice. The
+    # fixture tier is itself a static file, so this exercises the same
+    # invariant the real HF-backed loader must uphold (fixed seed -> fixed
+    # first-N slice, not a freshly reshuffled sample per call).
+    loader_a = get_loader("c4_slice")
+    loader_b = get_loader("c4_slice")
+    ids_a = [ex.example_id for ex in loader_a.load("fixture")]
+    ids_b = [ex.example_id for ex in loader_b.load("fixture")]
+    assert ids_a == ids_b
+
+
+def test_c4_slice_constants_are_module_level():
+    from ladder.datasets import _C4_SLICE_N, _C4_SLICE_SEED
+
+    assert isinstance(_C4_SLICE_N, int) and _C4_SLICE_N > 0
+    assert isinstance(_C4_SLICE_SEED, int)
+
+
+# --- LAMBADA ---------------------------------------------------------------
+
+
+def test_get_loader_returns_lambada_loader():
+    loader = get_loader("lambada")
+    assert isinstance(loader, LambadaLoader)
+
+
+def test_lambada_fixture_tier_yields_examples():
+    loader = get_loader("lambada")
+    examples = list(loader.load("fixture"))
+    assert len(examples) == 10
+    for ex in examples:
+        assert isinstance(ex, Example)
+
+
+def test_lambada_fixture_tier_schema():
+    loader = get_loader("lambada")
+    for ex in loader.load("fixture"):
+        assert ex.dataset == "lambada"
+        assert ex.split == "fixture"
+        assert isinstance(ex.example_id, str) and ex.example_id.startswith("lambada-")
+        assert set(ex.payload.keys()) == {"context", "target"}
+        assert isinstance(ex.payload["context"], str) and ex.payload["context"]
+        assert isinstance(ex.payload["target"], str) and ex.payload["target"]
+        # target is a single word: no internal whitespace.
+        assert " " not in ex.payload["target"]
+
+
+def test_lambada_fixture_tier_stable_ids_are_unique():
+    loader = get_loader("lambada")
+    ids = [ex.example_id for ex in loader.load("fixture")]
+    assert len(ids) == len(set(ids))
+
+
+def test_lambada_fixture_tier_respects_limit():
+    loader = get_loader("lambada")
+    examples = list(loader.load("fixture", limit=3))
+    assert len(examples) == 3
+
+
+def test_lambada_fixture_tier_ids_are_stable_across_loads():
+    loader = get_loader("lambada")
+    ids_first = [ex.example_id for ex in loader.load("fixture")]
+    ids_second = [ex.example_id for ex in loader.load("fixture")]
+    assert ids_first == ids_second
+
+
+def test_lambada_to_example_splits_last_word_as_target():
+    row = {"text": "The dog chased the ball across the yard"}
+    ex = LambadaLoader._to_example(row, "fixture", 0)
+    assert ex.payload["context"] == "The dog chased the ball across the"
+    assert ex.payload["target"] == "yard"
+    assert ex.example_id == "lambada-0"
+
+
+# --- GSM8K -------------------------------------------------------------
+
+
+def test_get_loader_returns_gsm8k_loader():
+    loader = get_loader("gsm8k")
+    assert isinstance(loader, Gsm8kLoader)
+
+
+def test_gsm8k_fixture_tier_yields_examples():
+    loader = get_loader("gsm8k")
+    examples = list(loader.load("fixture"))
+    assert len(examples) == 8
+    for ex in examples:
+        assert isinstance(ex, Example)
+
+
+def test_gsm8k_fixture_tier_schema():
+    loader = get_loader("gsm8k")
+    for ex in loader.load("fixture"):
+        assert ex.dataset == "gsm8k"
+        assert ex.split == "fixture"
+        assert isinstance(ex.example_id, str) and ex.example_id.startswith("gsm8k-")
+        assert set(ex.payload.keys()) == {"question", "answer_number"}
+        assert isinstance(ex.payload["question"], str) and ex.payload["question"]
+        assert isinstance(ex.payload["answer_number"], float)
+
+
+def test_gsm8k_fixture_tier_stable_ids_are_unique():
+    loader = get_loader("gsm8k")
+    ids = [ex.example_id for ex in loader.load("fixture")]
+    assert len(ids) == len(set(ids))
+
+
+def test_gsm8k_fixture_tier_respects_limit():
+    loader = get_loader("gsm8k")
+    examples = list(loader.load("fixture", limit=3))
+    assert len(examples) == 3
+
+
+def test_gsm8k_fixture_tier_ids_are_stable_across_loads():
+    loader = get_loader("gsm8k")
+    ids_first = [ex.example_id for ex in loader.load("fixture")]
+    ids_second = [ex.example_id for ex in loader.load("fixture")]
+    assert ids_first == ids_second
+
+
+def test_gsm8k_to_example_extracts_number_after_hashes():
+    row = {
+        "question": "If a train travels 60 miles in 2 hours, what is its speed?",
+        "answer": "The train travels 60 miles in 2 hours.\nSpeed = 60 / 2 = 30 miles per hour.\n#### 30",
+    }
+    ex = Gsm8kLoader._to_example(row, "fixture", 0)
+    assert ex.payload["question"] == row["question"]
+    assert ex.payload["answer_number"] == 30.0
+    assert ex.example_id == "gsm8k-0"
+
+
+def test_gsm8k_to_example_strips_commas_from_answer():
+    row = {"question": "How many total?", "answer": "Reasoning...\n#### 1,234"}
+    ex = Gsm8kLoader._to_example(row, "fixture", 1)
+    assert ex.payload["answer_number"] == 1234.0

@@ -29,6 +29,13 @@ class PromptVariant(BaseModel):
         continuation_style: For "mc", whether continuations are option letters
             or full option text. None for non-"mc" families.
         num_fewshot: Number of few-shot examples the template expects/embeds.
+        max_new_tokens: For "generative", the generation token budget
+            (architecture.md §6 — the variant, not the evaluator, owns this
+            since it's a property of the prompt format/answer style, e.g. how
+            much room a chain-of-thought answer cue needs). None for
+            non-"generative" families.
+        stop: For "generative", stop sequences ending generation early. None
+            for non-"generative" families.
     """
 
     id: str
@@ -36,6 +43,8 @@ class PromptVariant(BaseModel):
     template: str
     continuation_style: Literal["letter", "option_text"] | None = None
     num_fewshot: int = 0
+    max_new_tokens: int | None = None
+    stop: list[str] | None = None
 
 
 def load_variant(variant_id: str) -> PromptVariant:
@@ -60,21 +69,58 @@ def load_variant(variant_id: str) -> PromptVariant:
 def render(example: Example, variant: PromptVariant) -> RenderedRequest:
     """Pure function (Example, PromptVariant) -> RenderedRequest.
 
-    Only `task_family == "mc"` is implemented in Sprint 1 (cloze/generative
-    arrive with their evaluators in Sprint 3).
+    `task_family in {"mc", "cloze", "generative"}` are all implemented
+    (architecture.md §6).
 
     Args:
         example: The `Example` to render a prompt for.
         variant: The `PromptVariant` template/config to render with.
 
     Returns:
-        A `RenderedRequest` with the formatted prompt and per-option continuations.
+        A `RenderedRequest` with the formatted prompt and per-option
+        continuations ("mc"), or a bare prompt with no continuations and
+        `gen_params` set from the variant's own generation config ("cloze",
+        "generative" — the evaluator generates instead of scoring options).
 
     Raises:
-        NotImplementedError: If `variant.task_family` is not "mc".
+        NotImplementedError: If `variant.task_family` is none of "mc",
+            "cloze", "generative".
     """
+    if variant.task_family == "cloze":
+        # Pass-through template (architecture.md §5): LAMBADA's payload is
+        # already the exact context to condition generation on, so the
+        # template exists for provenance (recording which variant id scored
+        # a run) rather than to reformat anything.
+        prompt = variant.template.format(context=example.payload["context"])
+        return RenderedRequest(
+            example_id=example.example_id,
+            prompt_variant_id=variant.id,
+            kind="generate",
+            prompt=prompt,
+            continuations=None,
+            gen_params=None,
+        )
+
+    if variant.task_family == "generative":
+        prompt = variant.template.format(question=example.payload["question"])
+        # Unlike cloze (whose generation budget is derived per-example from
+        # the target length, evaluators.cloze), a generative variant's
+        # max_new_tokens/stop are fixed properties of the prompt/answer
+        # format — e.g. how much room a chain-of-thought answer cue needs —
+        # so they're read straight off the variant and carried on the
+        # RenderedRequest itself, not recomputed by the evaluator per example.
+        gen_params = {"max_new_tokens": variant.max_new_tokens, "stop": variant.stop, "temperature": 0.0}
+        return RenderedRequest(
+            example_id=example.example_id,
+            prompt_variant_id=variant.id,
+            kind="generate",
+            prompt=prompt,
+            continuations=None,
+            gen_params=gen_params,
+        )
+
     if variant.task_family != "mc":
-        raise NotImplementedError(f"task_family={variant.task_family!r} arrives in a later sprint")
+        raise NotImplementedError(f"task_family={variant.task_family!r} is not a known task_family")
 
     choices: list[str] = example.payload["choices"]
     lettered_choices = "\n".join(

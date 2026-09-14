@@ -94,7 +94,34 @@ def test_dummy_client_generate_respects_stop_sequence():
     assert "." not in text
 
 
-def test_dummy_client_token_nlls_raises_until_sprint3():
+def test_dummy_client_token_nlls_is_deterministic():
+    a = DummyClient(seed=0, model_id="dummy")
+    b = DummyClient(seed=0, model_id="dummy")
+    result_a = a.token_nlls("the quick brown fox", context="once upon a time")
+    result_b = b.token_nlls("the quick brown fox", context="once upon a time")
+    assert result_a.model_dump() == result_b.model_dump()
+
+
+def test_dummy_client_token_nlls_differs_by_seed():
+    a = DummyClient(seed=0, model_id="dummy")
+    b = DummyClient(seed=1, model_id="dummy")
+    result_a = a.token_nlls("the quick brown fox")
+    result_b = b.token_nlls("the quick brown fox")
+    assert result_a.nlls != result_b.nlls
+
+
+def test_dummy_client_token_nlls_shape():
     client = DummyClient(seed=0)
-    with pytest.raises(NotImplementedError):
-        client.token_nlls("some text")
+    text = "the quick brown fox jumps"
+    result = client.token_nlls(text)
+    assert len(result.nlls) == len(text.split())
+    assert result.n_bytes == len(text.encode("utf-8"))
+    for nll in result.nlls:
+        assert nll > 0  # NLLs are non-negative
+
+
+def test_dummy_client_token_nlls_empty_text():
+    client = DummyClient(seed=0)
+    result = client.token_nlls("")
+    assert result.nlls == []
+    assert result.n_bytes == 0

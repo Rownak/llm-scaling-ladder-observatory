@@ -287,3 +287,221 @@ class MmluLoader(DatasetLoader):
 
 
 register("mmlu", MmluLoader)
+
+
+class WikiTextLoader(DatasetLoader):
+    """WikiText-103 test split (Salesforce/wikitext, config 'wikitext-103-raw-v1').
+
+    Normalized PPL payload: {text} (architecture.md §4) — windowing is the
+    perplexity evaluator's job, not the loader's, so each `Example` is one
+    raw document/paragraph, unmodified apart from dropping WikiText's own
+    blank-line and section-heading rows (e.g. "= Title =", "") which carry no
+    scorable text and would otherwise become zero-token PPL documents.
+    """
+
+    name = "wikitext103"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "wikitext.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split=split)
+        count = 0
+        for i, row in enumerate(ds):
+            text = row["text"].strip()
+            # Skip blank lines and WikiText's " = Section Heading = \n" rows —
+            # neither carries scorable prose, and an empty `text` would yield
+            # a zero-token PPL document (evaluators.perplexity handles empty
+            # text gracefully, but including it would pad n_examples with
+            # nothing that ever contributes an NLL).
+            if not text or (text.startswith("=") and text.endswith("=")):
+                continue
+            if limit is not None and count >= limit:
+                return
+            yield Example(
+                dataset="wikitext103",
+                split=split,
+                example_id=f"wikitext103-{i}",
+                payload={"text": text},
+            )
+            count += 1
+
+
+register("wikitext103", WikiTextLoader)
+
+
+# First N docs of the C4 validation split, fixed seed — reproducible slice,
+# not a random sample redrawn per call (architecture.md §4, §8 sweep budget).
+_C4_SLICE_N = 200
+_C4_SLICE_SEED = 0
+
+
+class C4SliceLoader(DatasetLoader):
+    """Fixed C4 validation slice (allenai/c4, config 'en'), first N docs at a fixed seed.
+
+    Normalized PPL payload: {text} (architecture.md §4). "First N docs" is
+    computed against a shuffle seeded by `_C4_SLICE_SEED`, not split order —
+    C4's validation split is itself already-shuffled web text, but pinning an
+    explicit local seed (rather than relying on the Hub's own row order,
+    which is an implementation detail of the dataset, not a project
+    guarantee) keeps the slice reproducible even if `datasets`/the Hub ever
+    changes how it streams rows. `_C4_SLICE_N`/`_C4_SLICE_SEED` are the two
+    knobs that fully determine the slice; changing either changes the slice
+    (a deliberate decision, same as bumping a prompt variant version).
+    """
+
+    name = "c4_slice"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL.
+
+        `split` otherwise names the *upstream* C4 split to slice from
+        (typically "validation"); the slice itself is always the same first
+        `_C4_SLICE_N` docs of a `_C4_SLICE_SEED`-shuffled view of that split,
+        regardless of `split`'s value, so `limit` only ever trims within an
+        already-deterministic sequence.
+        """
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "c4_slice.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("allenai/c4", "en", split=split, streaming=True)
+        ds = ds.shuffle(seed=_C4_SLICE_SEED, buffer_size=10_000)
+        count = 0
+        for i, row in enumerate(ds):
+            if i >= _C4_SLICE_N:
+                return
+            if limit is not None and count >= limit:
+                return
+            yield Example(
+                dataset="c4_slice",
+                split=split,
+                example_id=f"c4_slice-{i}",
+                payload={"text": row["text"]},
+            )
+            count += 1
+
+
+register("c4_slice", C4SliceLoader)
+
+
+class LambadaLoader(DatasetLoader):
+    """LAMBADA, OpenAI variant (EleutherAI/lambada_openai).
+
+    Normalized cloze payload: {context, target} (architecture.md §4). Each
+    raw row is one passage whose final word is the token every LAMBADA item
+    is testing prediction of; the OpenAI variant's preprocessing (already
+    applied by the `EleutherAI/lambada_openai` Hub dataset, not redone here)
+    is what makes "split off the last whitespace-delimited word" the correct
+    context/target split — the raw text has already been detokenized/cleaned
+    so this split lines up with the benchmark's intended target.
+    """
+
+    name = "lambada"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "lambada.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("EleutherAI/lambada_openai", "default", split=split)
+        count = 0
+        for i, row in enumerate(ds):
+            if limit is not None and count >= limit:
+                return
+            yield self._to_example(row, split, i)
+            count += 1
+
+    @staticmethod
+    def _to_example(row: dict, split: str, index: int) -> Example:
+        """Convert one raw lambada_openai row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from `EleutherAI/lambada_openai`, carrying `text`.
+            split: Split label to record on the resulting `Example`.
+            index: Row position, used to build a stable `example_id` (the
+                dataset carries no native row ID).
+
+        Returns:
+            An `Example` with payload {context, target} — `target` is the
+            passage's final whitespace-delimited word, `context` everything
+            before it (with the trailing space stripped).
+        """
+        text = row["text"].rstrip()
+        context, _, target = text.rpartition(" ")
+        return Example(
+            dataset="lambada",
+            split=split,
+            example_id=f"lambada-{index}",
+            payload={"context": context, "target": target},
+        )
+
+
+register("lambada", LambadaLoader)
+
+
+class Gsm8kLoader(DatasetLoader):
+    """GSM8K (openai/gsm8k, config 'main').
+
+    Normalized generative payload: {question, answer_number} (architecture.md
+    §4). GSM8K's raw `answer` field is a full chain-of-thought solution
+    ending in a literal `"#### <number>"` line — the loader extracts just the
+    final number at load time so evaluators never need to parse reasoning
+    text to find the gold answer (only the *model's* generation needs that,
+    via `metrics`'s extraction function).
+    """
+
+    name = "gsm8k"
+
+    def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        if split == "fixture":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "gsm8k.jsonl", split, limit)
+            return
+
+        from datasets import load_dataset
+
+        ds = load_dataset("openai/gsm8k", "main", split=split)
+        count = 0
+        for i, row in enumerate(ds):
+            if limit is not None and count >= limit:
+                return
+            yield self._to_example(row, split, i)
+            count += 1
+
+    @staticmethod
+    def _to_example(row: dict, split: str, index: int) -> Example:
+        """Convert one raw openai/gsm8k row into a normalized `Example`.
+
+        Args:
+            row: Raw row dict from `openai/gsm8k`, carrying `question`/`answer`.
+            split: Split label to record on the resulting `Example`.
+            index: Row position, used to build a stable `example_id` (the
+                dataset carries no native row ID).
+
+        Returns:
+            An `Example` with payload {question, answer_number} — the gold
+            number parsed from the `"#### <number>"` line at the end of
+            `answer`, with any thousands-separator commas stripped.
+        """
+        answer_text = row["answer"]
+        _, _, tail = answer_text.rpartition("####")
+        answer_number = float(tail.strip().replace(",", ""))
+        return Example(
+            dataset="gsm8k",
+            split=split,
+            example_id=f"gsm8k-{index}",
+            payload={"question": row["question"], "answer_number": answer_number},
+        )
+
+
+register("gsm8k", Gsm8kLoader)

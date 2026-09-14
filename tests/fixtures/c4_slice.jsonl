@@ -1,0 +1,5 @@
+{"dataset":"c4_slice","split":"fixture","example_id":"c4_slice-0","payload":{"text":"Local officials announced today that the new community center will open its doors next spring after months of construction delays caused by supply chain issues."}}
+{"dataset":"c4_slice","split":"fixture","example_id":"c4_slice-1","payload":{"text":"Researchers at the university published a study showing that regular exercise improves cognitive function in adults over the age of sixty five."}}
+{"dataset":"c4_slice","split":"fixture","example_id":"c4_slice-2","payload":{"text":"The recipe calls for two cups of flour, a teaspoon of baking soda, and a pinch of salt, mixed thoroughly before adding the wet ingredients."}}
+{"dataset":"c4_slice","split":"fixture","example_id":"c4_slice-3","payload":{"text":"Ticket prices for the summer concert series will remain unchanged from last year, organizers confirmed during a press conference on Tuesday."}}
+{"dataset":"c4_slice","split":"fixture","example_id":"c4_slice-4","payload":{"text":"The hiking trail was closed after a rockslide damaged part of the path near the northern ridge, and crews are working to clear the debris."}}

@@ -277,3 +277,71 @@ seed: 0
         png_path = fig_dir / name
         assert png_path.exists(), name
         assert png_path.stat().st_size > 0, name
+
+
+def test_all_format_mini_sweep_then_headline_figure_renders(tmp_path):
+    """Sprint 3 Phase 3.6 integration test: all four evaluator types -> DB -> headline figure.
+
+    One model, final checkpoint only, one target per evaluator
+    (`loglik_mc`, `perplexity`, `cloze`, `generative`) — offline throughout
+    via DummyClient + fixtures, proving the full pipeline (including the
+    perplexity target's variant-less `SweepTarget`) reaches the DB and that
+    `ladderctl figures` can render `headline.png` from it, not just the
+    Sprint 2 figures.
+    """
+    db_path = tmp_path / "ladder.db"
+    fig_dir = tmp_path / "figures"
+    spec_path = tmp_path / "all_formats.yaml"
+    spec_path.write_text(
+        """
+models:
+  - model_id: dummy
+    revisions: [main]
+targets:
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_v1
+    evaluator: loglik_mc
+    split: fixture
+  - dataset: lambada
+    variant: lambada/cloze_v1
+    evaluator: cloze
+    split: fixture
+  - dataset: gsm8k
+    variant: gsm8k/gen_v1
+    evaluator: generative
+    split: fixture
+  - dataset: wikitext103
+    evaluator: perplexity
+    split: fixture
+limit: 5
+seed: 0
+""",
+        encoding="utf-8",
+    )
+
+    sweep_result = runner.invoke(app, ["sweep", "run", str(spec_path), "--db", str(db_path)])
+    assert sweep_result.exit_code == 0, sweep_result.output
+    assert "Executed 4 run(s); 0 failed." in sweep_result.output
+
+    conn = connect(db_path)
+    runs = list_runs(conn)
+    assert len(runs) == 4
+    assert all(r.status == "done" for r in runs)
+
+    by_evaluator = {r.evaluator: r for r in runs}
+    assert set(by_evaluator) == {"loglik_mc", "cloze", "generative", "perplexity"}
+    assert "acc" in by_evaluator["loglik_mc"].metrics
+    assert "acc_norm" in by_evaluator["loglik_mc"].metrics
+    assert "acc" in by_evaluator["cloze"].metrics
+    assert "acc" in by_evaluator["generative"].metrics
+    assert "bpb" in by_evaluator["perplexity"].metrics
+    assert "ppl" in by_evaluator["perplexity"].metrics
+    assert by_evaluator["perplexity"].prompt_variant_id is None
+
+    figures_result = runner.invoke(app, ["figures", "--db", str(db_path), "--out-dir", str(fig_dir)])
+    assert figures_result.exit_code == 0, figures_result.output
+
+    for name in ["accuracy_per_run.png", "scaling_curve.png", "trajectory.png", "trajectory_bpb.png", "headline.png"]:
+        png_path = fig_dir / name
+        assert png_path.exists(), name
+        assert png_path.stat().st_size > 0, name

@@ -5,7 +5,22 @@ Evaluators call these to turn per-example `ExampleResult`s into the
 aggregate `metrics` dict stored on a `RunRecord`.
 """
 
+import math
+import re
+
 from ladder.records import ExampleResult
+
+_NATS_PER_BIT = math.log(2)  # converts nats to bits for bpb
+
+# Matches a signed, comma-grouped, optionally-decimal number, e.g. "-1,234.5".
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+# Cue phrases GSM8K-style generations use to flag the final answer explicitly,
+# checked in order — the first one present wins (architecture.md §6).
+_ANSWER_CUE_PATTERNS = [
+    re.compile(r"Final answer:\s*(-?\d[\d,]*(?:\.\d+)?)", re.IGNORECASE),
+    re.compile(r"####\s*(-?\d[\d,]*(?:\.\d+)?)"),
+]
 
 
 def acc(results: list[ExampleResult]) -> float:
@@ -46,3 +61,83 @@ def acc_norm(results: list[ExampleResult]) -> float:
         return 0.0
     n_correct = sum(1 for r in results if r.detail["correct_norm"])
     return n_correct / len(results)
+
+
+def perplexity_metrics(results: list[ExampleResult]) -> dict[str, float]:
+    """Aggregate per-document PPL results into run-level `ppl`/`bpb` (architecture.md §6).
+
+    Sums `detail["window_nlls"]` (nats) and `detail["n_bytes"]` across every
+    document — as written by `evaluators.perplexity`, one `ExampleResult` per
+    document with its own already-deduplicated sliding-window NLLs — then:
+
+    - `ppl = exp(total_nll_nats / n_scored_tokens)`: per-model only, never
+      compared across tokenizers (different vocabularies score different
+      numbers of tokens for the same text, so raw PPL isn't comparable
+      cross-model).
+    - `bpb = total_nll_bits / total_utf8_bytes`: the canonical cross-model
+      metric, since byte count is tokenizer-independent.
+
+    Args:
+        results: `ExampleResult`s from `evaluators.perplexity`. Each must
+            carry `detail["window_nlls"]` (list[float], nats) and
+            `detail["n_bytes"]` (int).
+
+    Returns:
+        `{"ppl": ..., "bpb": ..., "n_scored_tokens": ..., "n_bytes": ...}`.
+        `ppl` is `float("inf")` and `bpb` is 0.0 if there are zero scored
+        tokens (e.g. an empty result list) — there is no well-defined
+        per-token average of an empty sum.
+    """
+    total_nll_nats = 0.0
+    n_scored_tokens = 0
+    n_bytes = 0
+    for r in results:
+        total_nll_nats += sum(r.detail["window_nlls"])
+        n_scored_tokens += len(r.detail["window_nlls"])
+        n_bytes += r.detail["n_bytes"]
+
+    ppl = math.exp(total_nll_nats / n_scored_tokens) if n_scored_tokens > 0 else float("inf")
+    bpb = (total_nll_nats / _NATS_PER_BIT) / n_bytes if n_bytes > 0 else 0.0
+
+    return {
+        "ppl": ppl,
+        "bpb": bpb,
+        "n_scored_tokens": float(n_scored_tokens),
+        "n_bytes": float(n_bytes),
+    }
+
+
+def extract_answer_number(text: str) -> float | None:
+    """Extract the model's final numeric answer from a generative response (architecture.md §6).
+
+    Pattern-first, last-number fallback:
+
+    1. If `text` contains an explicit answer cue (`"Final answer: N"`, case-
+       insensitive, or a GSM8K-style `"#### N"` line), the number following
+       the *last* such cue wins — a generation that reasons its way through
+       several numbers but explicitly flags its answer should be scored on
+       that flagged number, not whatever number happens to appear last in
+       free text.
+    2. Otherwise, falls back to the last number appearing anywhere in
+       `text` — the closest a free-form chain-of-thought response gets to
+       "the final answer" without an explicit cue.
+
+    Comma thousands-separators are stripped before parsing (`"1,234"` ->
+    `1234.0`); negative numbers and decimals are both recognized.
+
+    Args:
+        text: Raw model generation to extract a numeric answer from.
+
+    Returns:
+        The extracted number as a float, or None if `text` contains no
+        number at all.
+    """
+    for pattern in _ANSWER_CUE_PATTERNS:
+        matches = pattern.findall(text)
+        if matches:
+            return float(matches[-1].replace(",", ""))
+
+    matches = _NUMBER_RE.findall(text)
+    if not matches:
+        return None
+    return float(matches[-1].replace(",", ""))
