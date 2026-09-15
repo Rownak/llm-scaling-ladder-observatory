@@ -84,6 +84,26 @@ def test_loglik_mc_is_deterministic_given_same_seed(tmp_path):
     assert [r.model_dump() for r in results_a] == [r.model_dump() for r in results_b]
 
 
+def test_loglik_mc_prepends_fewshot_demos_when_variant_requests_them(tmp_path):
+    loader = get_loader("arc_easy")
+    example = next(loader.load("fixture", limit=1))
+    variant = load_variant("arc_easy/mc_letter_5shot_v1").model_copy(
+        update={"fewshot_split": "fixture_train"}
+    )
+    client = get_client("dummy", seed=0)
+
+    result = next(loglik_mc("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    # Prepended demos means the scored prompt is much longer than a zero-shot
+    # render of the same example, and each fixture_train question text
+    # appears somewhere in it.
+    zero_shot_prompt = render_prompt(example, load_variant("arc_easy/mc_letter_v1"))
+    assert result.detail["answer_index"] == example.payload["answer_index"]
+    train_examples = list(loader.load("fixture_train"))
+    demo_prompt = render_request(example, variant, demos=train_examples[:5]).prompt
+    assert len(demo_prompt) > len(zero_shot_prompt)
+
+
 def test_loglik_mc_results_feed_acc_metric(tmp_path):
     loader = get_loader("arc_easy")
     examples = list(loader.load("fixture"))

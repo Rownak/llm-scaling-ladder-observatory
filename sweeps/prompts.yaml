@@ -3,16 +3,16 @@
 # question is format sensitivity per model size, not across training, so the
 # intermediate-checkpoint axis from sweeps/main.yaml is dropped here.
 #
-# Targets: arc_easy x 3 variants (letter / option_text / letter_instr) +
-# mmlu x 2 variants (letter / option_text). arc_easy/mc_letter_v1 and
-# mmlu/mc_letter_v1 at "main" are already paid for by sweeps/main.yaml — the
-# prediction cache (architecture.md §7) makes those rows free to re-request
-# here, so results/figures can read this sweep's DB rows without a second
-# real inference pass for the letter variants.
+# Targets: arc_easy x 4 variants (letter / option_text / letter_instr /
+# letter_5shot) + mmlu x 2 variants (letter / option_text). arc_easy/mc_letter_v1
+# and mmlu/mc_letter_v1 at "main" are already paid for by sweeps/main.yaml —
+# the prediction cache (architecture.md §7) makes those rows free to
+# re-request here, so results/figures can read this sweep's DB rows without a
+# second real inference pass for the letter variants.
 #
-# The 5-shot ARC-Easy variant (arc_easy/mc_letter_5shot_v1) lands in Phase
-# 4.1 and is added to this file's targets afterward — resumable, so re-running
-# is additive, not a redo (sprints/sprint4.md Phase 4.3).
+# arc_easy/mc_letter_5shot_v1 (Phase 4.1) added here once authored — this was
+# an additive re-run (resumable sweep, no redo of the first 5 targets'
+# already-`done` rows), not a rewrite (sprints/sprint4.md Phase 4.3).
 
 models:
   - model_id: pythia-70m
@@ -35,6 +35,10 @@ targets:
     split: test
   - dataset: arc_easy
     variant: arc_easy/mc_letter_instr_v1
+    evaluator: loglik_mc
+    split: test
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_5shot_v1
     evaluator: loglik_mc
     split: test
   - dataset: mmlu

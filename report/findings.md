@@ -179,28 +179,34 @@ unexplained.
 
 ## Prompt sensitivity (Sprint 4)
 
-Three ARC-Easy variants (`mc_letter_v1`, `mc_option_text_v1`,
-`mc_letter_instr_v1`) and two MMLU variants (`mc_letter_v1`,
-`mc_option_text_v1`) — same models, same examples, only the prompt format
-changes — swept across the final checkpoint of all four Pythia sizes
-(`sweeps/prompts.yaml`, 20 runs). `figures.prompt_sensitivity_chart`
+Four ARC-Easy variants (`mc_letter_v1`, `mc_option_text_v1`,
+`mc_letter_instr_v1`, `mc_letter_5shot_v1`) and two MMLU variants
+(`mc_letter_v1`, `mc_option_text_v1`) — same models, same examples, only the
+prompt format changes — swept across the final checkpoint of all four Pythia
+sizes (`sweeps/prompts.yaml`, 24 runs). `figures.prompt_sensitivity_chart`
 (`report/figures/prompt_sensitivity.png`) plots accuracy per model per
 variant, one panel per benchmark, plus `acc_norm` for the option-text variant
 (dashed hollow marker) since normalizing by continuation length matters once
 continuations are full option strings rather than uniform-length letters.
 
+The 5-shot variant's demos are drawn deterministically —
+`random.Random(variant.fewshot_seed)` picks 5 fixed examples from ARC-Easy's
+train split once per run, the same set for every evaluated example — so
+`prompt_variant_id` alone is enough to reconstruct exactly which demos scored
+any given run (architecture.md §5).
+
 **Status: pipeline proven offline, real sweep not yet run.** As with every
 prior sprint's headline artifact, `sweeps/prompts.yaml` has been validated by
-expanding it (`tests/test_sweep.py::test_load_sweep_spec_prompts_yaml`, 20
-runs, 5 distinct variant ids) and by an end-to-end DummyClient mini-sweep
+expanding it (`tests/test_sweep.py::test_load_sweep_spec_prompts_yaml`, 24
+runs, 6 distinct variant ids) and by an end-to-end DummyClient mini-sweep
 (`tests/test_cli_integration.py::test_variant_mini_sweep_then_prompt_sensitivity_figure_renders`)
 proving `sweep run` → DB → `ladderctl figures` renders
 `prompt_sensitivity.png` and that run rows carry distinct
 `prompt_variant_id`s. It has not yet run against real Pythia checkpoints —
-that run, the actual per-variant accuracy deltas, and the answer to whether
-ARC-Easy/MMLU's flat-at-chance result (see the PPL vs. accuracy table above)
-survives the format change are the next step once GPU time is available. The
-5-shot ARC-Easy variant (Phase 4.1) is not yet in this sweep.
+that run, the actual per-variant accuracy deltas, the 0- vs. 5-shot delta,
+and the answer to whether ARC-Easy/MMLU's flat-at-chance result (see the PPL
+vs. accuracy table above) survives the format change are the next step once
+GPU time is available.
 
 ## Future work
 

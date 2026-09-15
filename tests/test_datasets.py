@@ -61,6 +61,27 @@ def test_fixture_tier_ids_are_stable_across_loads():
     assert ids_first == ids_second
 
 
+def test_fixture_train_tier_yields_examples():
+    # Separate offline train-split fixture for few-shot demo selection
+    # (sprints/sprint4.md Phase 4.1) — a distinct file, not a filter on the
+    # shared "fixture" tier, so it's disjoint from the eval fixture above.
+    loader = get_loader("arc_easy")
+    examples = list(loader.load("fixture_train"))
+    assert len(examples) == 5
+    for ex in examples:
+        assert isinstance(ex, Example)
+        assert ex.dataset == "arc_easy"
+        assert ex.split == "fixture_train"
+        assert set(ex.payload.keys()) == {"question", "choices", "answer_index"}
+
+
+def test_fixture_train_tier_is_disjoint_from_fixture_tier():
+    loader = get_loader("arc_easy")
+    fixture_ids = {ex.example_id for ex in loader.load("fixture")}
+    train_ids = {ex.example_id for ex in loader.load("fixture_train")}
+    assert fixture_ids.isdisjoint(train_ids)
+
+
 def test_to_example_handles_non_letter_answer_key():
     # ARC-Easy's label alphabet isn't fixed: some rows use "1".."4" instead of "A".."D".
     row = {

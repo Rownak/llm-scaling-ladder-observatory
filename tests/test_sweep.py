@@ -89,13 +89,14 @@ def test_load_sweep_spec_prompts_yaml():
     assert all(m.revisions == ["main"] for m in spec.models)
 
     runs = expand_sweep(spec)
-    assert len(runs) == 20  # 4 models x 5 targets, final checkpoint only
+    assert len(runs) == 24  # 4 models x 6 targets, final checkpoint only
 
     variant_ids = {r.variant for r in runs}
     assert variant_ids == {
         "arc_easy/mc_letter_v1",
         "arc_easy/mc_option_text_v1",
         "arc_easy/mc_letter_instr_v1",
+        "arc_easy/mc_letter_5shot_v1",
         "mmlu/mc_letter_v1",
         "mmlu/mc_option_text_v1",
     }

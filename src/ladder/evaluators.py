@@ -5,9 +5,11 @@ arrive in Sprint 3 Phases 3.2/3.4/3.5 (architecture.md §6).
 """
 
 import math
+import random
 from collections.abc import Iterator
 
 from ladder.client import GenParams, LoglikResult, ModelClient
+from ladder.datasets import get_loader
 from ladder.metrics import extract_answer_number
 from ladder.prompts import PromptVariant, render
 from ladder.records import Example, ExampleResult, Prediction
@@ -29,7 +31,8 @@ def loglik_mc(
 ) -> Iterator[ExampleResult]:
     """Score multiple-choice examples by argmax over continuation log-likelihoods.
 
-    For each example: render its `RenderedRequest` via `variant`, then for
+    For each example: render its `RenderedRequest` via `variant` (plus
+    few-shot demos, once per run, if `variant.num_fewshot > 0`), then for
     each continuation consult `cache` before calling `client.loglikelihood`
     — a cache hit skips the client call entirely (architecture.md §7). Picks
     the argmax (by raw summed loglik) as the model's chosen option. Both
@@ -37,6 +40,12 @@ def loglik_mc(
     length) are computed per-example so their divergence across prompt
     styles can be studied later — `metrics.acc`/`metrics.acc_norm` aggregate
     at the run level.
+
+    Few-shot demo selection lives here, not in `prompts.render` (architecture.md
+    §5): demos are drawn once per run — `random.Random(variant.fewshot_seed)`
+    picks `variant.num_fewshot` examples from `variant.fewshot_split` — and
+    the same fixed list is passed into every example's `render` call, keeping
+    `render` a pure function of its (example, variant, demos) arguments.
 
     Args:
         run_id: ID of the `RunRecord` these results belong to.
@@ -54,8 +63,10 @@ def loglik_mc(
         One `ExampleResult` per input example, with `detail` containing the
         chosen option index under both raw and length-normalized scoring.
     """
+    demos = _select_fewshot_demos(variant)
+
     for example in examples:
-        request = render(example, variant)
+        request = render(example, variant, demos=demos)
         assert request.continuations is not None  # mc always renders continuations
 
         scored = _scored_continuations(
@@ -86,6 +97,37 @@ def loglik_mc(
                 "logliks_norm": norm_scores,
             },
         )
+
+
+def _select_fewshot_demos(variant: PromptVariant) -> list[Example] | None:
+    """Draw `variant.num_fewshot` demo examples deterministically, or None for zero-shot.
+
+    Demo selection is variant-owned (architecture.md §5): a fixed
+    `random.Random(variant.fewshot_seed)` draw from `variant.fewshot_split`
+    means `prompt_variant_id` alone is sufficient to reconstruct which demos
+    a run used, without recording a run-level seed dependency. Called once
+    per run (not per example) so every example in the run shares the same
+    demo set.
+
+    Args:
+        variant: The `PromptVariant` to draw demos for. No-op (returns None)
+            unless `num_fewshot > 0`.
+
+    Returns:
+        `variant.num_fewshot` examples sampled without replacement from
+        `variant.fewshot_split` of `variant`'s own dataset (inferred from
+        `variant.id`'s leading path segment, e.g. "arc_easy/..." ->
+        "arc_easy"), in a fixed order determined by `variant.fewshot_seed`.
+        None if `variant.num_fewshot == 0`.
+    """
+    if variant.num_fewshot == 0:
+        return None
+
+    dataset_name = variant.id.split("/")[0]
+    loader = get_loader(dataset_name)
+    pool = list(loader.load(variant.fewshot_split))
+    rng = random.Random(variant.fewshot_seed)
+    return rng.sample(pool, variant.num_fewshot)
 
 
 def _scored_continuations(

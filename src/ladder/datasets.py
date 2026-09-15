@@ -116,9 +116,19 @@ class ArcEasyLoader(DatasetLoader):
     name = "arc_easy"
 
     def load(self, split: str, limit: int | None = None) -> Iterator[Example]:
-        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL."""
+        """See `DatasetLoader.load`. `split="fixture"` reads the bundled offline JSONL.
+
+        `split="fixture_train"` reads a separate small offline JSONL standing
+        in for the "train" split — used to draw few-shot demos
+        network-disabled (architecture.md §4, sprints/sprint4.md Phase 4.1).
+        The real HF tier needs no equivalent branch: `split="train"` already
+        passes straight through to `load_dataset` below.
+        """
         if split == "fixture":
             yield from _load_fixture_jsonl(FIXTURES_DIR / "arc_easy.jsonl", split, limit)
+            return
+        if split == "fixture_train":
+            yield from _load_fixture_jsonl(FIXTURES_DIR / "arc_easy_train.jsonl", split, limit)
             return
 
         from datasets import load_dataset
