@@ -2,7 +2,7 @@
 
 import math
 
-from ladder.metrics import acc, acc_norm, extract_answer_number, perplexity_metrics
+from ladder.metrics import acc, acc_norm, cloze_metrics, extract_answer_number, perplexity_metrics
 from ladder.records import ExampleResult
 
 
@@ -81,6 +81,46 @@ def test_acc_norm_all_incorrect():
 
 def test_acc_norm_empty_list():
     assert acc_norm([]) == 0.0
+
+
+def _cloze_result(
+    *, target_nll: float, target_ppl: float, nonstandard_match: bool, example_id: str = "ex"
+) -> ExampleResult:
+    return ExampleResult(
+        run_id="run-1",
+        example_id=example_id,
+        correct=None,  # cloze_metrics doesn't read `correct` (acc() already covers the primary metric)
+        score=0.0,
+        detail={
+            "target_nll": target_nll,
+            "target_ppl": target_ppl,
+            "nonstandard_generated_word_acc": nonstandard_match,
+        },
+    )
+
+
+def test_cloze_metrics_hand_computed():
+    # Two examples, worked by hand:
+    #   ex0: target_nll=2.0, target_ppl=exp(2.0)=7.389, nonstandard match=True
+    #   ex1: target_nll=4.0, target_ppl=exp(4.0)=54.598, nonstandard match=False
+    # target_nll_mean = (2.0 + 4.0) / 2 = 3.0
+    # target_ppl_mean = (7.389 + 54.598) / 2 = 30.994 (approx)
+    # nonstandard_generated_word_acc = 1/2 = 0.5
+    results = [
+        _cloze_result(target_nll=2.0, target_ppl=math.exp(2.0), nonstandard_match=True, example_id="ex0"),
+        _cloze_result(target_nll=4.0, target_ppl=math.exp(4.0), nonstandard_match=False, example_id="ex1"),
+    ]
+
+    metrics = cloze_metrics(results)
+
+    assert metrics["target_nll_mean"] == 3.0
+    assert math.isclose(metrics["target_ppl_mean"], (math.exp(2.0) + math.exp(4.0)) / 2)
+    assert metrics["nonstandard_generated_word_acc"] == 0.5
+
+
+def test_cloze_metrics_empty_list():
+    metrics = cloze_metrics([])
+    assert metrics == {"target_nll_mean": 0.0, "target_ppl_mean": 0.0, "nonstandard_generated_word_acc": 0.0}
 
 
 def _ppl_result(window_nlls: list[float], n_bytes: int, example_id: str = "doc") -> ExampleResult:

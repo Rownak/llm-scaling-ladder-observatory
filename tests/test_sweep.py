@@ -193,6 +193,12 @@ def test_run_sweep_executes_cloze_and_generative_targets(tmp_path):
     assert all(r.status == "done" for r in executed)
     assert all("acc" in r.metrics for r in executed)
 
+    by_dataset = {r.dataset: r for r in executed}
+    assert "target_nll_mean" in by_dataset["lambada"].metrics
+    assert "target_ppl_mean" in by_dataset["lambada"].metrics
+    assert "nonstandard_generated_word_acc" in by_dataset["lambada"].metrics
+    assert "target_nll_mean" not in by_dataset["gsm8k"].metrics  # cloze-only metrics
+
 
 def test_run_sweep_continues_after_a_failed_run(tmp_path):
     conn = connect(tmp_path / "ladder.db")

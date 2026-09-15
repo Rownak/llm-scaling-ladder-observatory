@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from ladder.client import GenParams, LoglikResult, ModelClient, TokenNLLs, get_client
 from ladder.datasets import get_loader
 from ladder.evaluators import cloze, generative, loglik_mc, perplexity
@@ -224,23 +226,30 @@ def test_perplexity_multiple_documents_aggregate_across_run(tmp_path):
 
 
 class _RiggedClient(ModelClient):
-    """Fake `ModelClient` whose `generate` output is set per-prompt by the test.
+    """Fake `ModelClient` whose `generate` output and greedy-match flag are set per-prompt by the test.
 
     `DummyClient.generate` always produces "The answer is {number}." (client.py),
     which can never equal an arbitrary LAMBADA target word, so it cannot
-    exercise `cloze`'s "reproduces the target" path. This rigged client lets a
-    test pin an exact generation per prompt (Sprint 3, Phase 3.4's "DummyClient
-    rigged to reproduce/not-reproduce targets" requirement) while keeping
-    `loglikelihood` deterministic so `detail["target_logprob"]` is still
-    checkable.
+    exercise `cloze`'s generation-based diagnostic path. This rigged client
+    lets a test pin an exact generation per prompt (Sprint 3, Phase 3.4's
+    "DummyClient rigged to reproduce/not-reproduce targets" requirement)
+    and independently pin `is_greedy_match` (Sprint 4/5's greedy target-word
+    accuracy primary metric, architecture.md §6) — the two are deliberately
+    decoupled in tests since they're now decoupled in `cloze` itself (a
+    generation can differ from the target while `is_greedy_match` is still
+    True, exactly the "Queen." vs. "Queen" bug this rig exists to reproduce).
     """
 
-    def __init__(self, generations: dict[str, str], loglik_value: float = -1.5):
+    def __init__(self, generations: dict[str, str], loglik_value: float = -1.5, is_greedy_match: bool = True):
         self._generations = generations
         self._loglik_value = loglik_value
+        self._is_greedy_match = is_greedy_match
 
     def loglikelihood(self, prompt: str, continuations: list[str]) -> list[LoglikResult]:
-        return [LoglikResult(loglik=self._loglik_value, n_tokens=1) for _ in continuations]
+        return [
+            LoglikResult(loglik=self._loglik_value, n_tokens=1, is_greedy_match=self._is_greedy_match)
+            for _ in continuations
+        ]
 
     def generate(self, prompt: str, params: GenParams) -> str:
         return self._generations[prompt]
@@ -253,10 +262,12 @@ def _lambada_example(context: str, target: str, example_id: str = "lambada-x") -
     return Example(dataset="lambada", split="fixture", example_id=example_id, payload={"context": context, "target": target})
 
 
-def test_cloze_exact_match_when_generation_equals_target(tmp_path):
+def test_cloze_correct_when_target_is_greedy_match(tmp_path):
+    # Primary metric: correct/score come from is_greedy_match, not from
+    # whether generation equals target (architecture.md §6, Sprint 4/5 fix).
     example = _lambada_example("The sky is very", "blue")
     variant = load_variant("lambada/cloze_v1")
-    client = _RiggedClient({"The sky is very": " blue"})
+    client = _RiggedClient({"The sky is very": " blue"}, is_greedy_match=True)
 
     (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
 
@@ -266,10 +277,10 @@ def test_cloze_exact_match_when_generation_equals_target(tmp_path):
     assert result.detail["target"] == "blue"
 
 
-def test_cloze_no_match_when_generation_differs_from_target(tmp_path):
+def test_cloze_incorrect_when_target_is_not_greedy_match(tmp_path):
     example = _lambada_example("The sky is very", "blue")
     variant = load_variant("lambada/cloze_v1")
-    client = _RiggedClient({"The sky is very": " green"})
+    client = _RiggedClient({"The sky is very": " green"}, is_greedy_match=False)
 
     (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
 
@@ -278,17 +289,18 @@ def test_cloze_no_match_when_generation_differs_from_target(tmp_path):
     assert result.detail["generation"] == " green"
 
 
-def test_cloze_strips_whitespace_before_comparing(tmp_path):
-    # Generation carries a leading space (continuation convention, same as
-    # loglik_mc's " A"/" foo" continuations) and possibly trailing
-    # whitespace/newline fragments; comparison must strip both.
-    example = _lambada_example("Roses are red, violets are", "blue")
+def test_cloze_scores_correct_despite_generation_mismatch_when_greedy_match_true(tmp_path):
+    # The bug this metric fixes: a raw generation that doesn't equal the
+    # target string verbatim (e.g. it ran on to a second, unrelated word)
+    # must not affect `correct` at all — only is_greedy_match does.
+    example = _lambada_example("The king and", "Queen", "ex-queen")
     variant = load_variant("lambada/cloze_v1")
-    client = _RiggedClient({"Roses are red, violets are": "  blue  "})
+    client = _RiggedClient({"The king and": " something else entirely"}, is_greedy_match=True)
 
     (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
 
-    assert result.correct is True
+    assert result.correct is True  # primary metric: greedy match, not string equality
+    assert result.detail["generation"] == " something else entirely"
 
 
 def test_cloze_target_logprob_stored_in_detail(tmp_path):
@@ -299,17 +311,26 @@ def test_cloze_target_logprob_stored_in_detail(tmp_path):
     (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
 
     assert result.detail["target_logprob"] == -2.75
+    assert result.detail["target_nll"] == 2.75
+    assert result.detail["target_ppl"] == pytest.approx(math.exp(2.75))
+
+
+def test_cloze_nonstandard_generated_word_acc_normalizes_punctuation(tmp_path):
+    example = _lambada_example("The king and", "Queen", "ex-queen2")
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient({"The king and": " Queen."})
+
+    (result,) = list(cloze("run-1", [example], variant, client, _cache(tmp_path), "dummy", "main"))
+
+    # Diagnostic field: strips trailing punctuation before comparing, unlike
+    # the old strict comparison — this is what the deprecated exact-match
+    # behavior *should* have done, kept only as a sanity-check diagnostic.
+    assert result.detail["nonstandard_generated_word_acc"] is True
 
 
 def test_cloze_accuracy_hand_computed_three_of_five(tmp_path):
-    # Sprint 3, Phase 3.4: accuracy fixture worked by hand. 5 examples, rigged
-    # generations: 3 exactly reproduce their target, 2 don't.
-    #   ex0: target="blue"  generation=" blue"  -> match
-    #   ex1: target="snow"  generation=" snow"  -> match
-    #   ex2: target="keys"  generation=" wallet" -> no match
-    #   ex3: target="pepper" generation=" pepper" -> match
-    #   ex4: target="page"  generation=" book"  -> no match
-    # acc = 3/5 = 0.6
+    # 5 examples, rigged is_greedy_match: 3 True, 2 False. acc = 3/5 = 0.6
+    # (primary metric — no longer tied to the generation string at all).
     examples = [
         _lambada_example("The sky is very", "blue", "ex0"),
         _lambada_example("It began to", "snow", "ex1"),
@@ -317,21 +338,52 @@ def test_cloze_accuracy_hand_computed_three_of_five(tmp_path):
         _lambada_example("Add a dash of", "pepper", "ex3"),
         _lambada_example("She opened the", "page", "ex4"),
     ]
-    generations = {
-        "The sky is very": " blue",
-        "It began to": " snow",
-        "He grabbed his": " wallet",
-        "Add a dash of": " pepper",
-        "She opened the": " book",
+    match_flags = {
+        "The sky is very": True,
+        "It began to": True,
+        "He grabbed his": False,
+        "Add a dash of": True,
+        "She opened the": False,
     }
+    generations = {p: " x" for p in match_flags}  # generation text is irrelevant to `correct` now
     variant = load_variant("lambada/cloze_v1")
-    client = _RiggedClient(generations)
+
+    class _PerPromptGreedyClient(_RiggedClient):
+        def loglikelihood(self, prompt: str, continuations: list[str]) -> list[LoglikResult]:
+            return [
+                LoglikResult(loglik=self._loglik_value, n_tokens=1, is_greedy_match=match_flags[prompt])
+                for _ in continuations
+            ]
+
+    client = _PerPromptGreedyClient(generations)
 
     results = list(cloze("run-1", examples, variant, client, _cache(tmp_path), "dummy", "main"))
     accuracy = acc(results)
 
     assert accuracy == 0.6
     assert sum(1 for r in results if r.correct) == 3
+
+
+def test_cloze_metrics_aggregates_secondary_and_diagnostic_fields(tmp_path):
+    from ladder.metrics import cloze_metrics
+
+    examples = [
+        _lambada_example("The sky is very", "blue", "ex0"),
+        _lambada_example("It began to", "snow", "ex1"),
+    ]
+    variant = load_variant("lambada/cloze_v1")
+    client = _RiggedClient(
+        {"The sky is very": " blue", "It began to": " snow"}, loglik_value=-2.0, is_greedy_match=True
+    )
+
+    results = list(cloze("run-1", examples, variant, client, _cache(tmp_path), "dummy", "main"))
+    metrics = cloze_metrics(results)
+
+    assert metrics["target_nll_mean"] == pytest.approx(2.0)
+    assert metrics["target_ppl_mean"] == pytest.approx(math.exp(2.0))
+    assert metrics["nonstandard_generated_word_acc"] == 1.0
+
+
 
 
 def test_cloze_max_new_tokens_scales_with_target_word_count(tmp_path):

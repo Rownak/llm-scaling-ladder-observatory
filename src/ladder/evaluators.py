@@ -6,6 +6,7 @@ arrive in Sprint 3 Phases 3.2/3.4/3.5 (architecture.md §6).
 
 import math
 import random
+import string
 from collections.abc import Iterator
 
 from ladder.client import GenParams, LoglikResult, ModelClient
@@ -160,12 +161,19 @@ def _scored_continuations(
         string, not token count), so a cache hit reconstructs it as 0 rather
         than overloading `Prediction.n_bytes`, whose real meaning (UTF-8
         bytes of scored text) is load-bearing for bpb once PPL caching lands.
+        `is_greedy_match` round-trips through `Prediction.is_greedy_matches`;
+        a cache hit from before that field existed (`is_greedy_matches is
+        None`) reconstructs it as `False` — same "unknown treated as
+        not-yet-computed" fallback `n_tokens=0` already uses, since callers
+        needing a real value should force a fresh score rather than trust a
+        pre-existing cache entry's absent field.
     """
     results: list[LoglikResult] = []
     for cont in continuations:
         cached = cache.get(model_id, revision, "loglik", prompt, [cont], None)
         if cached is not None:
-            results.append(LoglikResult(loglik=cached.logliks[0], n_tokens=0))
+            is_greedy_match = cached.is_greedy_matches[0] if cached.is_greedy_matches else False
+            results.append(LoglikResult(loglik=cached.logliks[0], n_tokens=0, is_greedy_match=is_greedy_match))
             continue
 
         (scored,) = client.loglikelihood(prompt, [cont])
@@ -184,6 +192,7 @@ def _scored_continuations(
                 token_nlls=None,
                 generation=None,
                 n_bytes=None,
+                is_greedy_matches=[scored.is_greedy_match],
             ),
         )
         results.append(scored)
@@ -307,25 +316,35 @@ def cloze(
     model_id: str,
     revision: str,
 ) -> Iterator[ExampleResult]:
-    """Score LAMBADA-style cloze examples: greedy-generate, exact-match the target.
+    """Score LAMBADA-style cloze examples: teacher-forced greedy target-word accuracy.
 
     For each example: render its `RenderedRequest` via `variant` (a pass-
-    through cloze template, §5), then greedily generate from `client` with a
-    token budget sized to the target (`_CLOZE_TOKENS_PER_TARGET_WORD` tokens
-    per target word — generous headroom since token count and word count
-    aren't the same thing, but the target is short so overshoot is cheap).
-    `correct` is exact string match between the generated text (stripped of
-    leading/trailing whitespace, matching how `target` is stored — no
-    casing/punctuation normalization) and `target`. The target's own logprob
-    is scored separately via `client.loglikelihood` and stored in `detail`
-    regardless of whether generation matched, since it's useful signal on
-    its own (how confident the model was in the correct word, not just
-    whether greedy decoding happened to produce it).
+    through cloze template, §5), then score the gold `target` in context via
+    `client.loglikelihood`. **Primary metric** — `correct`/`score` — is
+    `LoglikResult.is_greedy_match`: whether every token of `target` equals
+    the model's argmax at its position, teacher-forced. This is the standard
+    LAMBADA protocol (matches lm-evaluation-harness) and is immune to the
+    measurement bug free-form generation has: greedy decoding has no reason
+    to stop exactly at the target word boundary, so it can pick up trailing
+    punctuation/tokens (" Queen." vs. target "Queen") and get marked wrong
+    for a word it evidently knew (see `report/findings.md`'s LAMBADA
+    writeup). `correct` no longer depends on `client.generate` at all.
 
-    Both the generation and the target-logprob calls go through `cache`
-    first (architecture.md §7) — a "generate" cache entry is keyed on
-    `(prompt, gen_params)`, a "loglik" entry on `(prompt, [target])`, so they
-    never collide even though both read the same underlying example.
+    A free-form `generation` is still produced (same token budget as before,
+    `_CLOZE_TOKENS_PER_TARGET_WORD` per target word) and stored in `detail`
+    for two purposes only — never for scoring: (1) **secondary metrics**
+    `target_nll`/`target_ppl`, both derived from the same `loglikelihood`
+    call already made for the primary metric, no extra client cost; (2) a
+    **diagnostic, explicitly non-standard** `nonstandard_generated_word_acc`
+    — punctuation-stripped first-word match between `generation` and
+    `target` — kept only to sanity-check that the primary metric and the old
+    generation-based approach agree once punctuation is normalized away, not
+    as a metric anyone should cite.
+
+    Both the generation and the target-loglik calls go through `cache` first
+    (architecture.md §7) — a "generate" cache entry is keyed on `(prompt,
+    gen_params)`, a "loglik" entry on `(prompt, [target])`, so they never
+    collide even though both read the same underlying example.
 
     Args:
         run_id: ID of the `RunRecord` these results belong to.
@@ -337,8 +356,10 @@ def cloze(
         revision: Model checkpoint/revision, part of the cache key.
 
     Yields:
-        One `ExampleResult` per input example; `detail` carries the raw
-        generation, the target, and the target's logprob.
+        One `ExampleResult` per input example; `correct`/`score` reflect the
+        primary greedy-match metric. `detail` carries the target, the raw
+        generation, `target_nll`, `target_ppl`, and the diagnostic
+        `nonstandard_generated_word_acc`.
     """
     for example in examples:
         request = render(example, variant)
@@ -352,7 +373,14 @@ def cloze(
             client, cache, model_id, revision, request.prompt, [f" {target}"]
         )
 
-        is_correct = generation.strip() == target
+        is_correct = target_scored.is_greedy_match
+        target_nll = -target_scored.loglik
+        target_ppl = math.exp(target_nll / target_scored.n_tokens) if target_scored.n_tokens > 0 else float("inf")
+
+        generated_word = generation.strip().split()[0] if generation.strip() else ""
+        generated_word = generated_word.strip(string.punctuation)
+        nonstandard_match = generated_word == target
+
         yield ExampleResult(
             run_id=run_id,
             example_id=example.example_id,
@@ -362,6 +390,9 @@ def cloze(
                 "target": target,
                 "generation": generation,
                 "target_logprob": target_scored.loglik,
+                "target_nll": target_nll,
+                "target_ppl": target_ppl,
+                "nonstandard_generated_word_acc": nonstandard_match,
             },
         )
 

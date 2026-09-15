@@ -76,6 +76,15 @@ def test_dummy_client_loglikelihood_shape():
     for r in results:
         assert r.loglik < 0  # logliks are negative log-probabilities
         assert r.n_tokens >= 1
+        assert isinstance(r.is_greedy_match, bool)
+
+
+def test_dummy_client_is_greedy_match_is_deterministic():
+    a = DummyClient(seed=0, model_id="dummy")
+    b = DummyClient(seed=0, model_id="dummy")
+    results_a = a.loglikelihood("prompt", [" A", " B"])
+    results_b = b.loglikelihood("prompt", [" A", " B"])
+    assert [r.is_greedy_match for r in results_a] == [r.is_greedy_match for r in results_b]
 
 
 def test_dummy_client_generate_is_deterministic_and_extractable():

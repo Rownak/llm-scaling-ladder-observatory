@@ -334,6 +334,9 @@ seed: 0
     assert "acc" in by_evaluator["loglik_mc"].metrics
     assert "acc_norm" in by_evaluator["loglik_mc"].metrics
     assert "acc" in by_evaluator["cloze"].metrics
+    assert "target_nll_mean" in by_evaluator["cloze"].metrics
+    assert "target_ppl_mean" in by_evaluator["cloze"].metrics
+    assert "nonstandard_generated_word_acc" in by_evaluator["cloze"].metrics
     assert "acc" in by_evaluator["generative"].metrics
     assert "bpb" in by_evaluator["perplexity"].metrics
     assert "ppl" in by_evaluator["perplexity"].metrics
