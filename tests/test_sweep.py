@@ -83,6 +83,25 @@ seed: 7
     assert spec.seed == 7
 
 
+def test_load_sweep_spec_prompts_yaml():
+    spec = load_sweep_spec("sweeps/prompts.yaml")
+    assert [m.model_id for m in spec.models] == ["pythia-70m", "pythia-160m", "pythia-410m", "pythia-1b"]
+    assert all(m.revisions == ["main"] for m in spec.models)
+
+    runs = expand_sweep(spec)
+    assert len(runs) == 24  # 4 models x 6 targets, final checkpoint only
+
+    variant_ids = {r.variant for r in runs}
+    assert variant_ids == {
+        "arc_easy/mc_letter_v1",
+        "arc_easy/mc_option_text_v1",
+        "arc_easy/mc_letter_instr_v1",
+        "arc_easy/mc_letter_5shot_v1",
+        "mmlu/mc_letter_v1",
+        "mmlu/mc_option_text_v1",
+    }
+
+
 def test_run_sweep_executes_all_runs_and_marks_them_done(tmp_path):
     conn = connect(tmp_path / "ladder.db")
     executed = run_sweep(conn, _SPEC)
@@ -173,6 +192,12 @@ def test_run_sweep_executes_cloze_and_generative_targets(tmp_path):
     assert len(executed) == 2
     assert all(r.status == "done" for r in executed)
     assert all("acc" in r.metrics for r in executed)
+
+    by_dataset = {r.dataset: r for r in executed}
+    assert "target_nll_mean" in by_dataset["lambada"].metrics
+    assert "target_ppl_mean" in by_dataset["lambada"].metrics
+    assert "nonstandard_generated_word_acc" in by_dataset["lambada"].metrics
+    assert "target_nll_mean" not in by_dataset["gsm8k"].metrics  # cloze-only metrics
 
 
 def test_run_sweep_continues_after_a_failed_run(tmp_path):

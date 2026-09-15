@@ -4,9 +4,11 @@ from ladder.figures import (
     PYTHIA_PARAM_COUNTS,
     _color_for_dataset,
     _marker_for_model,
+    _marker_for_variant,
     _revision_to_step,
     accuracy_grid_chart,
     headline_figure,
+    prompt_sensitivity_chart,
     scaling_curve_chart,
     trajectory_chart,
 )
@@ -22,6 +24,7 @@ def _run(
     revision="main",
     dataset="arc_easy",
     status="done",
+    prompt_variant_id=None,
 ):
     metrics = {}
     if acc is not None:
@@ -31,7 +34,8 @@ def _run(
     if bpb is not None:
         metrics["bpb"] = bpb
     evaluator = "perplexity" if bpb is not None and acc is None else "loglik_mc"
-    prompt_variant_id = None if evaluator == "perplexity" else f"{dataset}/mc_letter_v1"
+    if prompt_variant_id is None:
+        prompt_variant_id = None if evaluator == "perplexity" else f"{dataset}/mc_letter_v1"
     return RunRecord(
         run_id=run_id,
         model_id=model_id,
@@ -308,3 +312,96 @@ def test_headline_figure_full_seven_target_ladder_without_raising(tmp_path):
 
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+# --- prompt_sensitivity_chart (Sprint 4, Phase 4.4) --------------------------
+
+
+def test_prompt_sensitivity_chart_writes_png(tmp_path):
+    out_path = tmp_path / "prompt_sensitivity.png"
+    runs = [
+        _run(
+            "r1", acc=0.232, model_id="pythia-70m", revision="main", dataset="arc_easy",
+            prompt_variant_id="arc_easy/mc_letter_v1",
+        ),
+        _run(
+            "r2", acc=0.30, acc_norm=0.29, model_id="pythia-70m", revision="main", dataset="arc_easy",
+            prompt_variant_id="arc_easy/mc_option_text_v1",
+        ),
+        _run(
+            "r3", acc=0.24, model_id="pythia-160m", revision="main", dataset="arc_easy",
+            prompt_variant_id="arc_easy/mc_letter_v1",
+        ),
+        _run(
+            "r4", acc=0.32, acc_norm=0.31, model_id="pythia-160m", revision="main", dataset="arc_easy",
+            prompt_variant_id="arc_easy/mc_option_text_v1",
+        ),
+    ]
+
+    result = prompt_sensitivity_chart(runs, out_path)
+
+    assert result == out_path
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
+
+
+def test_prompt_sensitivity_chart_skips_benchmarks_with_only_one_variant(tmp_path):
+    out_path = tmp_path / "prompt_sensitivity.png"
+    runs = [
+        _run(
+            "r1", acc=0.3, model_id="pythia-70m", revision="main", dataset="hellaswag",
+            prompt_variant_id="hellaswag/mc_context_v1",
+        ),
+    ]
+
+    # Only one variant swept for hellaswag here — not a sensitivity comparison, no panel.
+    # Must not raise; produces an (empty) chart.
+    prompt_sensitivity_chart(runs, out_path)
+
+    assert out_path.exists()
+
+
+def test_prompt_sensitivity_chart_skips_non_final_unknown_model_and_non_mc_evaluator(tmp_path):
+    out_path = tmp_path / "prompt_sensitivity.png"
+    runs = [
+        _run(
+            "r1", acc=0.3, model_id="pythia-70m", revision="step1000", dataset="arc_easy",
+            prompt_variant_id="arc_easy/mc_letter_v1",
+        ),  # not final
+        _run(
+            "r2", acc=0.3, model_id="not-a-pythia-model", revision="main", dataset="arc_easy",
+            prompt_variant_id="arc_easy/mc_option_text_v1",
+        ),  # unknown model
+        _run(
+            "r3", bpb=0.9, model_id="pythia-70m", revision="main", dataset="arc_easy",
+            prompt_variant_id=None,
+        ),  # perplexity evaluator, no variant
+    ]
+
+    # Must not raise despite every run being filtered out; produces an (empty) chart.
+    prompt_sensitivity_chart(runs, out_path)
+
+    assert out_path.exists()
+
+
+def test_prompt_sensitivity_chart_handles_no_runs(tmp_path):
+    out_path = tmp_path / "prompt_sensitivity.png"
+
+    prompt_sensitivity_chart([], out_path)
+
+    assert out_path.exists()
+
+
+def test_marker_for_variant_is_fixed_for_known_variants():
+    seen = {}
+    assert _marker_for_variant("arc_easy/mc_letter_v1", seen) == "o"
+    assert _marker_for_variant("arc_easy/mc_option_text_v1", seen) == "s"
+    assert _marker_for_variant("arc_easy/mc_letter_instr_v1", seen) == "^"
+    assert seen == {}  # known variants never touch the fallback cache
+
+
+def test_marker_for_variant_assigns_stable_fallback_markers():
+    seen = {}
+    first = _marker_for_variant("some/unknown_variant", seen)
+    second = _marker_for_variant("some/unknown_variant", seen)
+    assert first == second

@@ -4,7 +4,7 @@ An offline-first LLM evaluation system that evaluates a ladder of Pythia checkpo
 
 ## The question this project answers
 
-**Does perplexity improve smoothly with scale while benchmark accuracy stays flat?** On a Pythia ladder from 70M to 1B, yes — and the split is clean. Bits-per-byte falls monotonically on both corpora (WikiText-103 1.439 → 1.021, C4 slice 1.174 → 0.866) and HellaSwag rises with it (0.314 → 0.384), while ARC-Easy and MMLU sit flat at their 4-option chance line and LAMBADA and GSM8K sit at ~0 regardless of size. See [report/figures/headline.png](report/figures/headline.png) and [report/findings.md](report/findings.md).
+**Does perplexity improve smoothly with scale while benchmark accuracy stays flat?** On a Pythia ladder from 70M to 1B, yes for some benchmarks — and the split is clean, once the eval logic is actually correct. Bits-per-byte falls monotonically on both corpora (WikiText-103 1.439 → 1.021, C4 slice 1.174 → 0.866), and HellaSwag (0.314 → 0.384) and LAMBADA (0.164 → 0.554) both rise with it. ARC-Easy and MMLU sit flat at their 4-option chance line, and GSM8K sits at ~0, regardless of size. See [report/figures/headline.png](report/figures/headline.png) and [report/findings.md](report/findings.md).
 
 Sprints 4–5 extend this with prompt sensitivity and harness parity.
 
@@ -18,17 +18,17 @@ Sprints 4–5 extend this with prompt sensitivity and harness parity.
 
 ## Status
 
-**In progress.** Sprints 1–3 of 5 are complete; the rest are planned and not yet implemented.
+**In progress.** Sprints 1–4 of 5 are complete; Sprint 5 is planned and not yet implemented.
 
 | Sprint | Status | What it adds |
 | --- | --- | --- |
 | 1 — Walking skeleton | Complete | One model, one benchmark, end-to-end: records, clients, loaders, prompts, `loglik_mc`, accuracy, SQLite, CLI, one figure. All downstream interfaces locked. |
 | 2 — Ladder + sweeps | Complete | HellaSwag/MMLU loaders, `acc_norm`, content-hash prediction cache, resumable sweep executor, scaling-curve and trajectory figures. |
 | 3 — Perplexity + formats | Complete | `token_nlls`, sliding-window perplexity with ppl/bpb, cloze (LAMBADA) and generative (GSM8K) evaluators, the headline figure. Full 84-run sweep executed on real hardware. |
-| 4 — Prompt sensitivity | Pending | Alternative MC variants (letter vs. option-text, instruction line), 5-shot rendering, variant sweep, sensitivity dot plot. |
+| 4 — Prompt sensitivity | Complete | Letter vs. option-text vs. instruction-line vs. 5-shot MC variants, variant sweep, sensitivity dot plot. |
 | 5 — Parity + report | Pending | lm-eval-harness importer, per-example diff with a fixed discrepancy taxonomy, final findings report. |
 
-The Sprint 1–3 surface described under Quickstart exists today: single runs, resumable sweeps over all 7 eval targets, perplexity with bits-per-byte, and the full figure set including the headline plot. `sweeps/main.yaml` has been executed end-to-end against real Pythia checkpoints (84 runs, 4 sizes × 3 checkpoints × 7 targets, on a 16GB RTX 4090). `ladderctl parity` and `import` are specified in [architecture.md](architecture.md) but not yet implemented.
+The Sprint 1–4 surface described under Quickstart exists today: single runs, resumable sweeps over all 7 eval targets, perplexity with bits-per-byte, the full figure set including the headline and prompt-sensitivity plots. `sweeps/main.yaml` has been executed end-to-end against real Pythia checkpoints (84 runs, 4 sizes × 3 checkpoints × 7 targets, on a 16GB RTX 4090), and `sweeps/prompts.yaml`'s variant grid likewise (24 runs, 4 sizes × 6 prompt variants at the final checkpoint). `ladderctl parity` and `import` are specified in [architecture.md](architecture.md) but not yet implemented.
 
 ## Quickstart
 
@@ -130,10 +130,30 @@ Final-checkpoint results across the ladder:
 | hellaswag (acc ↑) | 0.314 | 0.328 | 0.362 | 0.384 |
 | arc_easy (acc) | 0.232 | 0.230 | 0.234 | 0.232 |
 | mmlu (acc) | 0.226 | 0.222 | 0.220 | 0.224 |
-| lambada (acc) | 0.002 | 0.002 | 0.002 | 0.002 |
+| lambada (acc ↑) | 0.164 | 0.334 | 0.498 | 0.554 |
 | gsm8k (acc) | 0.004 | 0.002 | 0.016 | 0.014 |
 
-Both bpb columns fall monotonically and HellaSwag tracks them upward; ARC-Easy and MMLU hold at chance; LAMBADA and GSM8K stay at ~0. GSM8K at ~0 is [the expected finding, not a bug](report/findings.md) — base models at this scale don't do multi-step arithmetic. Two numbers deserve scepticism rather than citation: LAMBADA's flat 0.002 is likely an exact-match strictness artifact, and GSM8K's non-monotonicity is noise (at 500 examples, one correct answer is 0.002, so those are 1–8 raw hits).
+Both bpb columns fall monotonically, and HellaSwag and LAMBADA both track them upward; ARC-Easy and MMLU hold at chance; GSM8K stays at ~0. GSM8K at ~0 is [the expected finding, not a bug](report/findings.md) — base models at this scale don't do multi-step arithmetic. GSM8K's non-monotonicity is noise, not a reversal (at 500 examples, one correct answer is 0.002, so those are 1–8 raw hits). LAMBADA's numbers above are **post-fix** — the original exact-match evaluator wrongly scored this at a flat 0.002 across every size because greedy decoding ran past the target word before its stop condition, penalizing correct predictions like `"Queen"` scored against generation `"Queen."`; the evaluator now scores teacher-forced greedy target-word accuracy instead. See [report/findings.md](report/findings.md) for the full root-cause writeup.
+
+### Sprint 4 — prompt sensitivity
+
+Same models, same examples, only the prompt format changes. `sweeps/prompts.yaml` sweeps 4 ARC-Easy variants (letter, option-text, instruction-line, 5-shot) and 2 MMLU variants (letter, option-text) across all four model sizes at the final checkpoint — 24 runs, executed on real hardware:
+
+```bash
+ladderctl sweep run sweeps/prompts.yaml --db ./ladder.db
+ladderctl figures --db ./ladder.db --out-dir ./report/figures   # writes prompt_sensitivity.png
+```
+
+Final-checkpoint accuracy, letter vs. option-text:
+
+| variant | 70m | 160m | 410m | 1b |
+| --- | --- | --- | --- | --- |
+| arc_easy/mc_letter_v1 | 0.232 | 0.230 | 0.234 | 0.232 |
+| arc_easy/mc_option_text_v1 | 0.282 | 0.266 | 0.266 | 0.268 |
+| mmlu/mc_letter_v1 | 0.226 | 0.222 | 0.220 | 0.224 |
+| mmlu/mc_option_text_v1 | 0.236 | 0.220 | 0.216 | 0.234 |
+
+Formatting moves accuracy but not out of the noise floor: option-text lifts both benchmarks 3–7 points at every size, yet every variant/model point still sits within ~0.05 of the 0.25 chance line — Sprint 3's "flat at chance" reading survives, with formatting now a quantified caveat rather than an open question. Full table (incl. `acc_norm` and 5-shot) in [report/findings.md](report/findings.md#prompt-sensitivity-sprint-4).
 
 ## Architecture
 
@@ -183,7 +203,7 @@ pytest                  # default suite: offline, no network, no API keys
 pytest -m slow          # tokenizer-boundary regression on a tiny HF model (downloads once)
 ```
 
-The default suite is 181 tests and passes on a network-disabled machine — no downloads, no credentials. Anything touching a real model is gated behind the `slow` marker and deselected by default. Every metric has a hand-computed fixture test; every dataset loader has a bundled ~20-example JSONL fixture and works from it with the network off; the sweep executor has a dedicated interrupt-and-resume test asserting zero recomputation via cache-hit accounting.
+The default suite is 207 tests and passes on a network-disabled machine — no downloads, no credentials. Anything touching a real model is gated behind the `slow` marker and deselected by default. Every metric has a hand-computed fixture test; every dataset loader has a bundled ~20-example JSONL fixture and works from it with the network off; the sweep executor has a dedicated interrupt-and-resume test asserting zero recomputation via cache-hit accounting.
 
 ## Roadmap / future work
 
@@ -192,4 +212,4 @@ Deliberately out of scope, to keep the system small enough to finish and verify 
 - Training any models; the OLMo suite or other model families; Paloma per-domain perplexity.
 - A dashboard or any web service — figures are generated files, committed to the repo.
 - A third parity framework beyond lm-evaluation-harness; concurrency; DB migrations.
-- More benchmarks, more prompt variants, or few-shot sweeps beyond 0-shot vs. 5-shot on one benchmark.
+- More benchmarks, or prompt/few-shot variants beyond Sprint 4's grid (0-shot letter/option-text/instruction-line and 5-shot on ARC-Easy; letter/option-text on MMLU).

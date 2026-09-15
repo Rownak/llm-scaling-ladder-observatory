@@ -284,6 +284,10 @@ def get_prediction(conn: sqlite3.Connection, request_hash: str) -> Prediction | 
         token_nlls=payload["token_nlls"],
         generation=payload["generation"],
         n_bytes=payload["n_bytes"],
+        # .get(...) not [...]: rows cached before this field existed have no
+        # "is_greedy_matches" key at all, and must come back as None ("unknown"),
+        # not KeyError (architecture.md §7 — every field here is schema-versioned).
+        is_greedy_matches=payload.get("is_greedy_matches"),
     )
 
 
@@ -315,6 +319,7 @@ def save_prediction(conn: sqlite3.Connection, prediction: Prediction) -> None:
                     "token_nlls": prediction.token_nlls,
                     "generation": prediction.generation,
                     "n_bytes": prediction.n_bytes,
+                    "is_greedy_matches": prediction.is_greedy_matches,
                 }
             ),
         ),

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from ladder import __version__
 from ladder.client import ModelClient, get_client
 from ladder.datasets import get_loader
-from ladder.metrics import acc, acc_norm, perplexity_metrics
+from ladder.metrics import acc, acc_norm, cloze_metrics, perplexity_metrics
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
 from ladder.storage import PredictionCache, list_runs, save_example_results, save_run
@@ -301,6 +301,8 @@ def _execute_one(conn, run: SweepRun, client: ModelClient, evaluators: dict[str,
             metrics = {"acc": acc(results)}
             if run.evaluator == "loglik_mc":
                 metrics["acc_norm"] = acc_norm(results)
+            elif run.evaluator == "cloze":
+                metrics.update(cloze_metrics(results))
 
         run_record.status = "done"
         run_record.metrics = metrics

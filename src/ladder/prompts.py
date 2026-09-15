@@ -29,6 +29,12 @@ class PromptVariant(BaseModel):
         continuation_style: For "mc", whether continuations are option letters
             or full option text. None for non-"mc" families.
         num_fewshot: Number of few-shot examples the template expects/embeds.
+        fewshot_split: Split demos are drawn from (few-shot variants only,
+            `num_fewshot > 0`). None for zero-shot variants.
+        fewshot_seed: Seed fixing which demos are drawn from `fewshot_split`
+            (few-shot variants only). Variant-owned rather than run-level
+            (architecture.md §5): `render` takes no seed, so `prompt_variant_id`
+            alone is sufficient to reconstruct the exact demos a run used.
         max_new_tokens: For "generative", the generation token budget
             (architecture.md §6 — the variant, not the evaluator, owns this
             since it's a property of the prompt format/answer style, e.g. how
@@ -43,6 +49,8 @@ class PromptVariant(BaseModel):
     template: str
     continuation_style: Literal["letter", "option_text"] | None = None
     num_fewshot: int = 0
+    fewshot_split: str | None = None
+    fewshot_seed: int | None = None
     max_new_tokens: int | None = None
     stop: list[str] | None = None
 
@@ -66,15 +74,24 @@ def load_variant(variant_id: str) -> PromptVariant:
     return PromptVariant.model_validate(data)
 
 
-def render(example: Example, variant: PromptVariant) -> RenderedRequest:
-    """Pure function (Example, PromptVariant) -> RenderedRequest.
+def render(example: Example, variant: PromptVariant, demos: list[Example] | None = None) -> RenderedRequest:
+    """Pure function (Example, PromptVariant, demos) -> RenderedRequest.
 
     `task_family in {"mc", "cloze", "generative"}` are all implemented
     (architecture.md §6).
 
+    Few-shot demos are passed in already-selected, never drawn here — demo
+    *selection* (which examples, via `random.Random(variant.fewshot_seed)`)
+    is the caller's job, so this function never touches a loader or an RNG
+    and stays a pure function of its three arguments (architecture.md §5).
+
     Args:
         example: The `Example` to render a prompt for.
         variant: The `PromptVariant` template/config to render with.
+        demos: Few-shot demonstration examples to prepend, already selected
+            and in the order they should appear (`variant.num_fewshot`
+            entries expected). None/empty for zero-shot variants. "mc" only —
+            cloze/generative families ignore this argument.
 
     Returns:
         A `RenderedRequest` with the formatted prompt and per-option
@@ -123,18 +140,20 @@ def render(example: Example, variant: PromptVariant) -> RenderedRequest:
         raise NotImplementedError(f"task_family={variant.task_family!r} is not a known task_family")
 
     choices: list[str] = example.payload["choices"]
-    lettered_choices = "\n".join(
-        f"{_OPTION_LETTERS[i]}. {choice}" for i, choice in enumerate(choices)
-    )
-    # Question-style payloads (ARC-Easy, MMLU) carry "question"; context-completion
-    # payloads (HellaSwag) carry "context" instead — dispatch on whichever key the
-    # loader populated (architecture.md §4).
-    format_fields = {"lettered_choices": lettered_choices}
-    if "context" in example.payload:
-        format_fields["context"] = example.payload["context"]
-    else:
-        format_fields["question"] = example.payload["question"]
-    prompt = variant.template.format(**format_fields)
+    prompt = _render_mc_block(example, variant)
+
+    if demos:
+        # Each demo block ends with the gold continuation appended directly
+        # after the template's own trailing "Answer:" cue, then a blank line
+        # separates it from the next block — the eval example's block (with
+        # no answer appended) comes last, exactly where a zero-shot prompt
+        # would have started.
+        demo_blocks = []
+        for demo in demos:
+            demo_choices = demo.payload["choices"]
+            gold = _mc_continuation(demo_choices, demo.payload["answer_index"], variant.continuation_style)
+            demo_blocks.append(_render_mc_block(demo, variant) + gold)
+        prompt = "\n\n".join(demo_blocks) + "\n\n" + prompt
 
     if variant.continuation_style == "option_text":
         continuations = [f" {choice}" for choice in choices]
@@ -149,3 +168,49 @@ def render(example: Example, variant: PromptVariant) -> RenderedRequest:
         continuations=continuations,
         gen_params=None,
     )
+
+
+def _render_mc_block(example: Example, variant: PromptVariant) -> str:
+    """Render one "mc" template block (no continuation appended) for `example`.
+
+    Shared by the eval example itself and by each few-shot demo — a demo
+    block is this same rendering plus its own gold continuation appended
+    (`render`'s `demos` branch).
+
+    Args:
+        example: The `Example` to render.
+        variant: The `PromptVariant` template/config to render with.
+
+    Returns:
+        The formatted template string, dispatched on whichever of
+        "context"/"question" `example.payload` carries (architecture.md §4).
+    """
+    choices: list[str] = example.payload["choices"]
+    lettered_choices = "\n".join(
+        f"{_OPTION_LETTERS[i]}. {choice}" for i, choice in enumerate(choices)
+    )
+    format_fields = {"lettered_choices": lettered_choices}
+    if "context" in example.payload:
+        format_fields["context"] = example.payload["context"]
+    else:
+        format_fields["question"] = example.payload["question"]
+    return variant.template.format(**format_fields)
+
+
+def _mc_continuation(choices: list[str], answer_index: int, continuation_style: str | None) -> str:
+    """The gold continuation string for one MC example, matching `render`'s own continuation encoding.
+
+    Args:
+        choices: The example's option strings.
+        answer_index: Index of the correct option within `choices`.
+        continuation_style: "option_text" for full option strings, else
+            (including None) the lettered default.
+
+    Returns:
+        The gold continuation string, e.g. " A" or " <option text>" — the
+        same encoding `render` uses for scored continuations, so a few-shot
+        demo's answer reads identically to how the eval example would be scored.
+    """
+    if continuation_style == "option_text":
+        return f" {choices[answer_index]}"
+    return f" {_OPTION_LETTERS[answer_index]}"

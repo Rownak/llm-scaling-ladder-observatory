@@ -161,10 +161,81 @@ capability threshold these benchmarks require. GSM8K stays at ~0% across all
 four sizes, [the expected finding described above](#gsm8k-at-chance-is-an-expected-finding-not-a-bug),
 not a bug.
 
-Two numbers deserve scepticism rather than citation. LAMBADA's flat 0.002 is
-likely an exact-match strictness artifact in the cloze evaluator rather than
-a genuine scale-invariant floor — worth revisiting before drawing conclusions
-from it. GSM8K's non-monotonicity (410M briefly above 1B) is noise, not a
+**LAMBADA's flat 0.002 was confirmed to be a measurement bug, not a genuine
+floor, and the evaluator has since been fixed** (pre-Sprint-5; see
+architecture.md §6). Checking `detail["target_logprob"]` — already stored in
+`ladder.db` for every example since Phase 3.4 — showed target log-likelihood
+improving substantially with scale (mean logprob -5.06 at 70m to -2.15 at
+1b) while exact-match accuracy stayed pinned at 0.002 across all four sizes.
+Spot-checking generations confirmed why: the model reliably produced the
+correct target word but greedy decoding ran past the word boundary before
+hitting its only stop condition (`\n`), so e.g. target `"Queen"` scored wrong
+against generation `" Queen."` The evaluator's primary metric is now
+teacher-forced greedy target-word accuracy (`is_greedy_match`, matching
+standard LAMBADA/lm-evaluation-harness scoring) rather than free-form
+generation string-match — this needs no generation step to determine
+correctness and is immune to the boundary artifact. The `lambada (acc)` row
+in the table above is the **original, buggy** number, left in place rather
+than silently overwritten so a reviewer can see exactly what the bug looked
+like; the corrected numbers are below.
+
+### Fix confirmed: LAMBADA re-run with the greedy-match metric
+
+The stale cached predictions behind the 0.002 row were identified and
+cleared (`src/db_surgery/invalidate_lambada_cache.py` — reconstructs the
+exact `predictions` cache keys LAMBADA's 12 runs would have written and
+deletes only those, plus their `runs`/`example_results` rows; nothing else
+in `ladder.db` was touched), then `sweeps/main.yaml` was re-run to recompute
+LAMBADA from scratch on real hardware. All 12 runs (4 sizes × 3 checkpoints)
+completed, 0 failed:
+
+| model | checkpoint | acc (fixed) | target_nll_mean | target_ppl_mean | nonstandard_generated_word_acc |
+| --- | --- | --- | --- | --- | --- |
+| 70m | step1000 | 0.050 | 8.568 | 61211.6 | 0.050 |
+| 70m | step64000 | 0.210 | 4.906 | 10573.3 | 0.176 |
+| 70m | main | 0.164 | 5.057 | 7640.1 | 0.142 |
+| 160m | step1000 | 0.064 | 7.965 | 19556.8 | 0.058 |
+| 160m | step64000 | 0.380 | 3.449 | 1734.1 | 0.330 |
+| 160m | main | 0.334 | 3.660 | 4373.2 | 0.296 |
+| 410m | step1000 | 0.040 | 8.604 | 24856.9 | 0.036 |
+| 410m | step64000 | 0.512 | 2.620 | 495.4 | 0.448 |
+| 410m | main | 0.498 | 2.497 | 439.1 | 0.434 |
+| 1b | step1000 | 0.082 | 7.370 | 18018.0 | 0.078 |
+| 1b | step64000 | 0.520 | 2.312 | 598.4 | 0.450 |
+| 1b | main | 0.554 | 2.152 | 363.4 | 0.486 |
+
+Final-checkpoint (`main`) accuracy is **0.164 / 0.334 / 0.498 / 0.554** for
+70m/160m/410m/1b — not the flat 0.002 the buggy exact-match evaluator
+reported, and not fully monotonic either (each size's `step64000` checkpoint
+slightly out-accuracies its own `main`, a small late-training wobble, not
+noise at this magnitude given 500-example runs). The corrected picture:
+**LAMBADA behaves like a smooth, scale-tracking benchmark, similar to
+HellaSwag** — accuracy rises sharply with parameter count (0.164 → 0.554
+from 70m to 1b at the final checkpoint) and with training progress within a
+model (each size's `step1000` checkpoint sits far below its own later
+checkpoints). This reclassifies LAMBADA from "flat/degenerate" to "smooth"
+in the emergent-vs-smooth split the headline figure is built around — it
+should be read alongside bpb and HellaSwag, not alongside ARC-Easy/MMLU/GSM8K.
+
+`target_ppl_mean` corroborates the same trend from a different angle
+(independent of any decoding/matching behavior): target-word perplexity
+falls from ~61,000 at 70m/step1000 to ~363 at 1b/main, a ~170× reduction,
+tracking bpb's own smooth improvement across the ladder. The diagnostic
+`nonstandard_generated_word_acc` (punctuation-stripped generation match,
+never cited as a real metric) tracks `acc` closely but consistently
+undershoots it by a few points at every size — confirming the original bug's
+mechanism directly: some fraction of examples the model gets right by the
+correct (`is_greedy_match`) standard still fail a stricter string comparison,
+even after stripping trailing punctuation.
+
+**The headline figure and the main results table above are not yet
+regenerated from this corrected data** — `ladderctl figures` needs to be
+re-run against the updated `ladder.db` to produce a `headline.png` and
+`accuracy_per_run.png`/`trajectory.png` that reflect the fixed LAMBADA rows;
+that + updating the `lambada (acc)` row in the summary table above to
+0.164/0.334/0.498/0.554 is the next step.
+
+GSM8K's non-monotonicity (410M briefly above 1B) is noise, not a
 reversal: at 500 examples, one correct answer is worth 0.002 accuracy, so
 these numbers are 1–8 raw hits apart.
 
@@ -177,10 +248,75 @@ Agreement rate and a table of every discrepancy vs. lm-eval-harness on
 ARC-Easy and HellaSwag, each categorized and root-caused; zero left
 unexplained.
 
-## Prompt sensitivity (placeholder — later sprint)
+## Prompt sensitivity (Sprint 4)
 
-Accuracy deltas across 2–3 prompt formats per multiple-choice benchmark,
-across the ladder.
+Four ARC-Easy variants (`mc_letter_v1`, `mc_option_text_v1`,
+`mc_letter_instr_v1`, `mc_letter_5shot_v1`) and two MMLU variants
+(`mc_letter_v1`, `mc_option_text_v1`) — same models, same examples, only the
+prompt format changes — swept across the final checkpoint of all four Pythia
+sizes (`sweeps/prompts.yaml`, 24 runs). `figures.prompt_sensitivity_chart`
+(`report/figures/prompt_sensitivity.png`) plots accuracy per model per
+variant, one panel per benchmark, plus `acc_norm` for the option-text variant
+(dashed hollow marker) since normalizing by continuation length matters once
+continuations are full option strings rather than uniform-length letters.
+
+The 5-shot variant's demos are drawn deterministically —
+`random.Random(variant.fewshot_seed)` picks 5 fixed examples from ARC-Easy's
+train split once per run, the same set for every evaluated example — so
+`prompt_variant_id` alone is enough to reconstruct exactly which demos scored
+any given run (architecture.md §5).
+
+`sweeps/prompts.yaml` ran end-to-end on real hardware: all 6 variant targets
+× 4 Pythia sizes at the final checkpoint, 0 failed. Final-checkpoint (`main`)
+accuracy per variant:
+
+| variant | 70m | 160m | 410m | 1b |
+| --- | --- | --- | --- | --- |
+| arc_easy/mc_letter_v1 (acc) | 0.232 | 0.230 | 0.234 | 0.232 |
+| arc_easy/mc_letter_instr_v1 (acc) | 0.232 | 0.230 | 0.234 | 0.232 |
+| arc_easy/mc_option_text_v1 (acc) | 0.282 | 0.266 | 0.266 | 0.268 |
+| arc_easy/mc_option_text_v1 (acc_norm) | 0.300 | 0.276 | 0.296 | 0.272 |
+| arc_easy/mc_letter_5shot_v1 (acc) | 0.234 | 0.222 | 0.212 | 0.278 |
+| mmlu/mc_letter_v1 (acc) | 0.226 | 0.222 | 0.220 | 0.224 |
+| mmlu/mc_option_text_v1 (acc) | 0.236 | 0.220 | 0.216 | 0.234 |
+| mmlu/mc_option_text_v1 (acc_norm) | 0.294 | 0.288 | 0.284 | 0.288 |
+
+**The Sprint 1 signal replicates, at reduced size, across the whole ladder.**
+Switching ARC-Easy from lettered to option-text continuations lifts raw `acc`
+by 3–5 points at every model size (not the ~7-point jump the Sprint 1
+50-example spot check suggested — that was one model on a small sample), and
+`acc_norm` lifts it further still (up to 6.4 points over the letter baseline
+at 70m). MMLU shows the same direction and a larger `acc_norm` effect (up to
+6.8 points). The **instruction-line variant is identical to the plain letter
+variant** at every model size — prepending an explicit "choose the letter"
+instruction doesn't change which letter the model assigns highest
+log-likelihood to, so that axis alone isn't the lever; the scoring format
+(letter vs. option text) is what moves the number.
+
+**The claim is nuanced, not overturned.** Every one of the 32 (variant,
+model) accuracy points above sits within about 0.05 of the 4-option chance
+line (0.25) — option-text's real, measurable lift narrows the gap to chance
+without closing it at any size in this ladder. That's inconsistent with
+"format floor fully explains the flat line" (some of the flatness really is
+low capability, since no variant/model combination clears ~0.30) but also
+inconsistent with "the flat line is entirely capability-driven and prompt
+format is irrelevant" (the format lift is real, reproducible, and the same
+sign at every model size). The honest read: measurement format was
+suppressing part of the signal, not the emergent-capability story — Sprint
+3's "ARC-Easy/MMLU sit flat at chance" framing survives as directionally
+correct, with this section as its quantified caveat.
+
+**5-shot is noisy, not clearly better.** ARC-Easy's 5-shot accuracy
+(0.234/0.222/0.212/0.278) is not monotonic with scale and doesn't
+consistently beat the 0-shot letter baseline — at 500 examples a few raw
+answer flips move these numbers several points, so this reads as noise
+around the same chance-adjacent floor rather than a few-shot capability
+unlock, consistent with the letter continuation style still being the
+bottleneck (5-shot demos don't change how the *continuation* is scored, only
+how much context precedes it).
+
+See `report/figures/prompt_sensitivity.png` for the full per-benchmark dot
+plot (both `acc` and `acc_norm` views for the option-text variant).
 
 ## Future work
 

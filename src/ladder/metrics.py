@@ -63,6 +63,42 @@ def acc_norm(results: list[ExampleResult]) -> float:
     return n_correct / len(results)
 
 
+def cloze_metrics(results: list[ExampleResult]) -> dict[str, float]:
+    """Aggregate `evaluators.cloze` results into run-level secondary/diagnostic metrics.
+
+    `acc` (the primary greedy-match metric, from `ExampleResult.correct`) is
+    computed by the existing `acc()` function, same as every other
+    exact-match evaluator — this function supplies the metrics that live
+    only in `detail` (architecture.md §6's LAMBADA measurement-bug writeup).
+
+    Args:
+        results: `ExampleResult`s from `evaluators.cloze`. Each must carry
+            `detail["target_nll"]`, `detail["target_ppl"]`, and
+            `detail["nonstandard_generated_word_acc"]`.
+
+    Returns:
+        `{"target_nll_mean": ..., "target_ppl_mean": ...,
+        "nonstandard_generated_word_acc": ...}` — mean target NLL (nats) and
+        mean per-example target perplexity across all results (both 0.0 for
+        an empty list), and the fraction of results whose punctuation-
+        normalized generated word matched the target (the diagnostic
+        metric — not a substitute for `acc`).
+    """
+    if not results:
+        return {"target_nll_mean": 0.0, "target_ppl_mean": 0.0, "nonstandard_generated_word_acc": 0.0}
+
+    n = len(results)
+    target_nll_mean = sum(r.detail["target_nll"] for r in results) / n
+    target_ppl_mean = sum(r.detail["target_ppl"] for r in results) / n
+    nonstandard_acc = sum(1 for r in results if r.detail["nonstandard_generated_word_acc"]) / n
+
+    return {
+        "target_nll_mean": target_nll_mean,
+        "target_ppl_mean": target_ppl_mean,
+        "nonstandard_generated_word_acc": nonstandard_acc,
+    }
+
+
 def perplexity_metrics(results: list[ExampleResult]) -> dict[str, float]:
     """Aggregate per-document PPL results into run-level `ppl`/`bpb` (architecture.md §6).
 

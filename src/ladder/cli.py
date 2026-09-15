@@ -16,8 +16,14 @@ from ladder import __version__
 from ladder.client import get_client
 from ladder.datasets import get_loader
 from ladder.evaluators import cloze, generative, loglik_mc, perplexity
-from ladder.figures import accuracy_grid_chart, headline_figure, scaling_curve_chart, trajectory_chart
-from ladder.metrics import acc, acc_norm, perplexity_metrics
+from ladder.figures import (
+    accuracy_grid_chart,
+    headline_figure,
+    prompt_sensitivity_chart,
+    scaling_curve_chart,
+    trajectory_chart,
+)
+from ladder.metrics import acc, acc_norm, cloze_metrics, perplexity_metrics
 from ladder.prompts import load_variant
 from ladder.records import RunRecord
 from ladder.storage import (
@@ -137,6 +143,8 @@ def run(
             metrics = {"acc": acc(results)}
             if evaluator == "loglik_mc":
                 metrics["acc_norm"] = acc_norm(results)
+            elif evaluator == "cloze":
+                metrics.update(cloze_metrics(results))
 
         run_record.status = "done"
         run_record.metrics = metrics
@@ -279,5 +287,9 @@ def figures(
 
     out_path = out_dir / "headline.png"
     headline_figure(runs, out_path)
+    typer.echo(f"Wrote {out_path}")
+
+    out_path = out_dir / "prompt_sensitivity.png"
+    prompt_sensitivity_chart(runs, out_path)
     typer.echo(f"Wrote {out_path}")
 
