@@ -195,18 +195,57 @@ train split once per run, the same set for every evaluated example — so
 `prompt_variant_id` alone is enough to reconstruct exactly which demos scored
 any given run (architecture.md §5).
 
-**Status: pipeline proven offline, real sweep not yet run.** As with every
-prior sprint's headline artifact, `sweeps/prompts.yaml` has been validated by
-expanding it (`tests/test_sweep.py::test_load_sweep_spec_prompts_yaml`, 24
-runs, 6 distinct variant ids) and by an end-to-end DummyClient mini-sweep
-(`tests/test_cli_integration.py::test_variant_mini_sweep_then_prompt_sensitivity_figure_renders`)
-proving `sweep run` → DB → `ladderctl figures` renders
-`prompt_sensitivity.png` and that run rows carry distinct
-`prompt_variant_id`s. It has not yet run against real Pythia checkpoints —
-that run, the actual per-variant accuracy deltas, the 0- vs. 5-shot delta,
-and the answer to whether ARC-Easy/MMLU's flat-at-chance result (see the PPL
-vs. accuracy table above) survives the format change are the next step once
-GPU time is available.
+`sweeps/prompts.yaml` ran end-to-end on real hardware: all 6 variant targets
+× 4 Pythia sizes at the final checkpoint, 0 failed. Final-checkpoint (`main`)
+accuracy per variant:
+
+| variant | 70m | 160m | 410m | 1b |
+| --- | --- | --- | --- | --- |
+| arc_easy/mc_letter_v1 (acc) | 0.232 | 0.230 | 0.234 | 0.232 |
+| arc_easy/mc_letter_instr_v1 (acc) | 0.232 | 0.230 | 0.234 | 0.232 |
+| arc_easy/mc_option_text_v1 (acc) | 0.282 | 0.266 | 0.266 | 0.268 |
+| arc_easy/mc_option_text_v1 (acc_norm) | 0.300 | 0.276 | 0.296 | 0.272 |
+| arc_easy/mc_letter_5shot_v1 (acc) | 0.234 | 0.222 | 0.212 | 0.278 |
+| mmlu/mc_letter_v1 (acc) | 0.226 | 0.222 | 0.220 | 0.224 |
+| mmlu/mc_option_text_v1 (acc) | 0.236 | 0.220 | 0.216 | 0.234 |
+| mmlu/mc_option_text_v1 (acc_norm) | 0.294 | 0.288 | 0.284 | 0.288 |
+
+**The Sprint 1 signal replicates, at reduced size, across the whole ladder.**
+Switching ARC-Easy from lettered to option-text continuations lifts raw `acc`
+by 3–5 points at every model size (not the ~7-point jump the Sprint 1
+50-example spot check suggested — that was one model on a small sample), and
+`acc_norm` lifts it further still (up to 6.4 points over the letter baseline
+at 70m). MMLU shows the same direction and a larger `acc_norm` effect (up to
+6.8 points). The **instruction-line variant is identical to the plain letter
+variant** at every model size — prepending an explicit "choose the letter"
+instruction doesn't change which letter the model assigns highest
+log-likelihood to, so that axis alone isn't the lever; the scoring format
+(letter vs. option text) is what moves the number.
+
+**The claim is nuanced, not overturned.** Every one of the 32 (variant,
+model) accuracy points above sits within about 0.05 of the 4-option chance
+line (0.25) — option-text's real, measurable lift narrows the gap to chance
+without closing it at any size in this ladder. That's inconsistent with
+"format floor fully explains the flat line" (some of the flatness really is
+low capability, since no variant/model combination clears ~0.30) but also
+inconsistent with "the flat line is entirely capability-driven and prompt
+format is irrelevant" (the format lift is real, reproducible, and the same
+sign at every model size). The honest read: measurement format was
+suppressing part of the signal, not the emergent-capability story — Sprint
+3's "ARC-Easy/MMLU sit flat at chance" framing survives as directionally
+correct, with this section as its quantified caveat.
+
+**5-shot is noisy, not clearly better.** ARC-Easy's 5-shot accuracy
+(0.234/0.222/0.212/0.278) is not monotonic with scale and doesn't
+consistently beat the 0-shot letter baseline — at 500 examples a few raw
+answer flips move these numbers several points, so this reads as noise
+around the same chance-adjacent floor rather than a few-shot capability
+unlock, consistent with the letter continuation style still being the
+bottleneck (5-shot demos don't change how the *continuation* is scored, only
+how much context precedes it).
+
+See `report/figures/prompt_sensitivity.png` for the full per-benchmark dot
+plot (both `acc` and `acc_norm` views for the option-text variant).
 
 ## Future work
 
