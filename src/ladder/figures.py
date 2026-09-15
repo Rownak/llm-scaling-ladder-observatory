@@ -129,33 +129,129 @@ def _revision_to_step(revision: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def accuracy_bar_chart(runs: list[RunRecord], out_path: str | Path) -> Path:
-    """Render a bar chart of accuracy per run.
+# Datasets shown in accuracy_grid_chart, in fixed panel order: the 5
+# accuracy-style benchmarks (architecture.md §10) followed by the 2 PPL
+# corpora, whose panels plot bpb instead of acc.
+_GRID_ACC_DATASETS = _HEADLINE_ACC_DATASETS
+_GRID_PPL_DATASETS = ["wikitext103", "c4_slice"]
+
+# Fixed revision -> color assignment, light-to-dark by training progress, so
+# every panel in accuracy_grid_chart reads "lighter = earlier checkpoint"
+# without needing a per-panel legend.
+_REVISION_COLORS = {"step1000": "#c6dbef", "step64000": "#6baed6", "main": "#08519c"}
+_REVISION_ORDER = ["step1000", "step64000", "main"]
+
+
+def _model_order(model_ids: set[str]) -> list[str]:
+    """Order a set of model_ids by known Pythia param count, unknowns last.
 
     Args:
-        runs: `RunRecord`s to plot, in the order they should appear on the
-            x-axis. Runs without an "acc" key in `metrics` are skipped.
-        out_path: Destination PNG path; parent directories are not created
-            here (the caller ensures `out_dir` exists).
+        model_ids: Model ids to order.
 
     Returns:
-        `out_path`, coerced to a `Path`, for convenience chaining.
+        `model_ids` sorted by `PYTHIA_PARAM_COUNTS` ascending; any model_id
+        not in that table is appended afterward, alphabetically.
+    """
+    known = sorted(m for m in model_ids if m in PYTHIA_PARAM_COUNTS)
+    known.sort(key=lambda m: PYTHIA_PARAM_COUNTS[m])
+    unknown = sorted(m for m in model_ids if m not in PYTHIA_PARAM_COUNTS)
+    return known + unknown
+
+
+def accuracy_grid_chart(runs: list[RunRecord], out_path: str | Path) -> Path:
+    """Render a small-multiples grid: one panel per dataset, grouped bars per model, one bar per revision.
+
+    Replaces the earlier single-axes `accuracy_bar_chart`, which plotted one
+    bar per `RunRecord` in a flat row — unreadable once the full Sprint 3
+    sweep (4 models x 3 revisions x 7 targets) is loaded. This chart instead
+    gives one subplot per dataset (the 5 accuracy-style benchmarks plus the 2
+    PPL corpora), with model size on the x-axis and one bar per revision
+    within each model's group, so both the scaling trend (across groups) and
+    the training trajectory (across bars within a group) are visible at a
+    glance for every eval target.
+
+    Args:
+        runs: `RunRecord`s to plot. Only `status == "done"` runs whose
+            `model_id` is in `PYTHIA_PARAM_COUNTS` and whose `revision` is a
+            recognized Pythia checkpoint label (`_revision_to_step` /
+            `_REVISION_COLORS`) are plotted. A run contributes to an accuracy
+            panel if its dataset is in `_GRID_ACC_DATASETS` and `"acc" in
+            metrics`, or to a bpb panel if its dataset is in
+            `_GRID_PPL_DATASETS` and `"bpb" in metrics`. Datasets with no
+            plottable runs get no panel at all.
+        out_path: Destination PNG path.
+
+    Returns:
+        `out_path`, coerced to a `Path`.
 
     Side Effects:
         Writes a PNG file to `out_path`, overwriting any existing file.
     """
     out_path = Path(out_path)
-    plotted = [r for r in runs if "acc" in r.metrics]
 
-    labels = [f"{r.model_id}\n{r.dataset}" for r in plotted]
-    values = [r.metrics["acc"] for r in plotted]
+    # dataset -> {(model_id, revision): value}
+    panel_data: dict[str, dict[tuple[str, str], float]] = {}
+    panel_is_bpb: dict[str, bool] = {}
+    for r in runs:
+        if r.status != "done":
+            continue
+        if r.model_id not in PYTHIA_PARAM_COUNTS:
+            continue
+        if r.revision not in _REVISION_COLORS:
+            continue
 
-    fig, ax = plt.subplots(figsize=(max(4, 1.2 * len(plotted)), 4))
-    ax.bar(labels, values, color="tab:blue")
-    ax.set_ylabel("accuracy")
-    ax.set_ylim(0, 1)
-    ax.set_title("Accuracy per run")
-    fig.tight_layout()
+        if r.dataset in _GRID_ACC_DATASETS and "acc" in r.metrics:
+            panel_data.setdefault(r.dataset, {})[(r.model_id, r.revision)] = r.metrics["acc"]
+            panel_is_bpb[r.dataset] = False
+        elif r.dataset in _GRID_PPL_DATASETS and "bpb" in r.metrics:
+            panel_data.setdefault(r.dataset, {})[(r.model_id, r.revision)] = r.metrics["bpb"]
+            panel_is_bpb[r.dataset] = True
+
+    dataset_order = [d for d in _GRID_ACC_DATASETS + _GRID_PPL_DATASETS if d in panel_data]
+
+    n = len(dataset_order)
+    ncols = 3 if n > 1 else 1
+    nrows = max(1, math.ceil(n / ncols)) if n else 1
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 3.5 * nrows), squeeze=False)
+    flat_axes = [axes[i // ncols][i % ncols] for i in range(nrows * ncols)]
+
+    for idx, dataset in enumerate(dataset_order):
+        ax = flat_axes[idx]
+        values = panel_data[dataset]
+        models = _model_order({m for m, _ in values})
+        bar_width = 0.8 / len(_REVISION_ORDER)
+
+        for rev_idx, revision in enumerate(_REVISION_ORDER):
+            xs = []
+            ys = []
+            for model_idx, model_id in enumerate(models):
+                if (model_id, revision) not in values:
+                    continue
+                xs.append(model_idx + (rev_idx - 1) * bar_width)
+                ys.append(values[(model_id, revision)])
+            ax.bar(xs, ys, width=bar_width, color=_REVISION_COLORS[revision], label=revision)
+
+        if dataset in _CHANCE_RATE and not panel_is_bpb[dataset]:
+            ax.axhline(_CHANCE_RATE[dataset], linestyle="--", linewidth=1, color="black", alpha=0.5)
+
+        ax.set_xticks(range(len(models)))
+        ax.set_xticklabels(models, fontsize="small", rotation=20)
+        ax.set_title(dataset, fontsize="medium")
+        ax.set_ylabel("bpb" if panel_is_bpb[dataset] else "accuracy")
+        if not panel_is_bpb[dataset]:
+            ax.set_ylim(0, 1)
+
+    for idx in range(n, nrows * ncols):
+        flat_axes[idx].axis("off")
+
+    if n:
+        rev_handles = [
+            plt.Rectangle((0, 0), 1, 1, color=_REVISION_COLORS[rev], label=rev) for rev in _REVISION_ORDER
+        ]
+        fig.legend(handles=rev_handles, loc="lower center", ncol=len(_REVISION_ORDER), fontsize="small")
+
+    fig.suptitle("Accuracy / bpb per run, grouped by model and revision")
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
     fig.savefig(out_path)
     plt.close(fig)
 
