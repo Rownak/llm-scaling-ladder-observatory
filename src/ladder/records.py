@@ -60,6 +60,10 @@ class Prediction(BaseModel):
         token_nlls: Per-token NLLs, for PPL windows (nll requests only).
         generation: Generated text (generate requests only).
         n_bytes: UTF-8 byte count of the scored text, used to compute bits-per-byte.
+        is_greedy_matches: Per-continuation `LoglikResult.is_greedy_match`
+            (loglik requests only), parallel to `logliks`. None for
+            predictions cached before this field existed — callers must treat
+            that as "unknown," not "False" (architecture.md §6).
     """
 
     model_config = ConfigDict(protected_namespaces=())
@@ -71,6 +75,7 @@ class Prediction(BaseModel):
     token_nlls: list[float] | None  # for PPL windows
     generation: str | None
     n_bytes: int | None  # UTF-8 bytes of scored text (for bpb)
+    is_greedy_matches: list[bool] | None = None  # parallel to logliks, loglik requests only
 
 
 class ExampleResult(BaseModel):

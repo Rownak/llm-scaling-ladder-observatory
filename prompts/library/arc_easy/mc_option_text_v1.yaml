@@ -1,0 +1,8 @@
+id: arc_easy/mc_option_text_v1
+task_family: mc
+template: |
+  Question: {question}
+  {lettered_choices}
+  Answer:
+continuation_style: option_text  # score full option strings instead of bare letters
+num_fewshot: 0

@@ -1,0 +1,9 @@
+id: arc_easy/mc_letter_instr_v1
+task_family: mc
+template: |
+  Answer the following multiple choice question by choosing the letter of the correct option.
+  Question: {question}
+  {lettered_choices}
+  Answer:
+continuation_style: letter      # letter (" A".." D") | option_text (full option strings)
+num_fewshot: 0

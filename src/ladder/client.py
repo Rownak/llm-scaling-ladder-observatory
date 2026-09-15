@@ -18,10 +18,19 @@ class LoglikResult(BaseModel):
     Attributes:
         loglik: Sum logprob of the continuation tokens, in context.
         n_tokens: Number of continuation tokens (used for length-normalized accuracy).
+        is_greedy_match: Whether the continuation is exactly what greedy
+            decoding (argmax at every position) would have produced — i.e.
+            every continuation token equals the model's top-1 prediction at
+            its position, teacher-forced. Computed in the same forward pass
+            as `loglik`, at no extra cost. Used by `evaluators.cloze` for
+            LAMBADA's standard "greedy target-word accuracy" metric, which is
+            immune to free-form generation running past the target word and
+            picking up trailing punctuation (architecture.md §6).
     """
 
     loglik: float  # sum logprob of the continuation, in context
     n_tokens: int  # continuation token count (for acc_norm)
+    is_greedy_match: bool = False
 
 
 class GenParams(BaseModel):
@@ -198,7 +207,12 @@ class DummyClient(ModelClient):
             # plausibly accumulate more negative log-probability.
             n_tokens = max(1, len(cont.split()))
             loglik = -(1.0 + 4.0 * u) * n_tokens
-            results.append(LoglikResult(loglik=loglik, n_tokens=n_tokens))
+            # Deterministic synthetic greedy-match flag, mixed from the same
+            # (prompt, cont) key via a second independent draw — a real
+            # per-position argmax check has no meaning without real logits,
+            # so this just needs to be a stable, exercisable boolean for tests.
+            is_greedy_match = self._rng_value(prompt, cont, "greedy_match") < 0.5
+            results.append(LoglikResult(loglik=loglik, n_tokens=n_tokens, is_greedy_match=is_greedy_match))
         return results
 
     def generate(self, prompt: str, params: GenParams) -> str:
@@ -307,7 +321,7 @@ class HFClient(ModelClient):
         for cont in continuations:
             full_ids, n_prompt, cont_ids = self._prompt_continuation_ids(prompt, cont)
             if len(cont_ids) == 0:
-                results.append(LoglikResult(loglik=0.0, n_tokens=0))
+                results.append(LoglikResult(loglik=0.0, n_tokens=0, is_greedy_match=False))
                 continue
 
             input_ids = torch.tensor([full_ids], device=self.device)
@@ -318,11 +332,19 @@ class HFClient(ModelClient):
             # Position i's logits predict token i+1. Continuation tokens start at
             # index n_prompt, so their predicting positions start at n_prompt - 1.
             total_loglik = 0.0
+            is_greedy_match = True
             for i, token_id in enumerate(cont_ids):
                 pred_pos = n_prompt - 1 + i
                 total_loglik += log_probs[pred_pos, token_id].item()
+                # Teacher-forced greedy check: would argmax at this position have
+                # produced this exact token? Every position must match for the
+                # whole continuation to be "what greedy decoding would generate."
+                if log_probs[pred_pos].argmax().item() != token_id:
+                    is_greedy_match = False
 
-            results.append(LoglikResult(loglik=total_loglik, n_tokens=len(cont_ids)))
+            results.append(
+                LoglikResult(loglik=total_loglik, n_tokens=len(cont_ids), is_greedy_match=is_greedy_match)
+            )
         return results
 
     def generate(self, prompt: str, params: GenParams) -> str:

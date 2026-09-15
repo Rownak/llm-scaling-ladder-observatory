@@ -47,6 +47,7 @@ def test_get_put_prediction_round_trip(tmp_path):
             token_nlls=None,
             generation=None,
             n_bytes=None,
+            is_greedy_matches=[True],
         ),
     )
 
@@ -55,6 +56,31 @@ def test_get_put_prediction_round_trip(tmp_path):
     assert fetched.logliks == [-1.23]
     assert fetched.model_id == "dummy"
     assert fetched.revision == "main"
+    assert fetched.is_greedy_matches == [True]
+
+
+def test_get_prediction_is_greedy_matches_missing_field_returns_none(tmp_path):
+    # A row cached before is_greedy_matches existed has no such key in its
+    # payload_json at all — must come back as None ("unknown"), not KeyError
+    # or a silently-wrong [] / [False].
+    conn = connect(tmp_path / "ladder.db")
+    key = prediction_cache_key("dummy", "main", "loglik", "p", [" A"], None)
+    save_prediction(
+        conn,
+        Prediction(
+            request_hash=key,
+            model_id="dummy",
+            revision="main",
+            logliks=[-1.23],
+            token_nlls=None,
+            generation=None,
+            n_bytes=None,
+            # is_greedy_matches omitted entirely, simulating a pre-existing cache row.
+        ),
+    )
+
+    fetched = get_prediction(conn, key)
+    assert fetched.is_greedy_matches is None
 
 
 def test_prediction_cache_get_counts_hits_and_misses(tmp_path):
