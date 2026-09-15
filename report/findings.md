@@ -136,14 +136,40 @@ covers one target per evaluator type end-to-end). The spec has not yet been
 executed against real Pythia checkpoints on hardware; that run — and the
 first real headline figure — is the next step once GPU time is available.
 
-## PPL vs. accuracy across the ladder (placeholder — pending real sweep)
+## PPL vs. accuracy across the ladder
 
-Log-params vs. accuracy for all five benchmarks, with bits-per-byte on a twin
-axis: perplexity improving smoothly across the ladder while "emergent"
-benchmarks (MMLU, GSM8K) stay at chance and "smooth" benchmarks (LAMBADA,
-ARC-Easy, HellaSwag) track it. Figure-generation mechanism is done
-(`figures.headline_figure`, above); this section fills in once
-`sweeps/main.yaml` has run on real hardware.
+`sweeps/main.yaml` ran end-to-end on real hardware (16GB RTX 4090): all 84
+runs (4 sizes × 3 checkpoints × 7 targets), 0 failed. Final-checkpoint (`main`)
+results:
+
+| dataset | 70m | 160m | 410m | 1b |
+| --- | --- | --- | --- | --- |
+| wikitext103 (bpb ↓) | 1.439 | 1.260 | 1.090 | 1.021 |
+| c4_slice (bpb ↓) | 1.174 | 1.040 | 0.916 | 0.866 |
+| hellaswag (acc ↑) | 0.314 | 0.328 | 0.362 | 0.384 |
+| arc_easy (acc) | 0.232 | 0.230 | 0.234 | 0.232 |
+| mmlu (acc) | 0.226 | 0.222 | 0.220 | 0.224 |
+| lambada (acc) | 0.002 | 0.002 | 0.002 | 0.002 |
+| gsm8k (acc) | 0.004 | 0.002 | 0.016 | 0.014 |
+
+The predicted split holds cleanly. Bits-per-byte falls monotonically on both
+corpora across the full ladder, and HellaSwag — the one "smooth" benchmark
+in this set that isn't degenerate at 70M — tracks it upward in step. ARC-Easy
+and MMLU sit flat at their 4-option chance line (0.25) regardless of scale,
+exactly as the "emergent" prediction expects: nothing here crosses the
+capability threshold these benchmarks require. GSM8K stays at ~0% across all
+four sizes, [the expected finding described above](#gsm8k-at-chance-is-an-expected-finding-not-a-bug),
+not a bug.
+
+Two numbers deserve scepticism rather than citation. LAMBADA's flat 0.002 is
+likely an exact-match strictness artifact in the cloze evaluator rather than
+a genuine scale-invariant floor — worth revisiting before drawing conclusions
+from it. GSM8K's non-monotonicity (410M briefly above 1B) is noise, not a
+reversal: at 500 examples, one correct answer is worth 0.002 accuracy, so
+these numbers are 1–8 raw hits apart.
+
+See `figures/headline.png` for the plot and `figures/trajectory_bpb.png` for
+bpb's trajectory within each model's own training run.
 
 ## Parity vs. lm-evaluation-harness (placeholder — later sprint)
 

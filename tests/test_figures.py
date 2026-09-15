@@ -5,7 +5,7 @@ from ladder.figures import (
     _color_for_dataset,
     _marker_for_model,
     _revision_to_step,
-    accuracy_bar_chart,
+    accuracy_grid_chart,
     headline_figure,
     scaling_curve_chart,
     trajectory_chart,
@@ -50,23 +50,43 @@ def _run(
     )
 
 
-def test_accuracy_bar_chart_writes_png(tmp_path):
+def test_accuracy_grid_chart_writes_png(tmp_path):
     out_path = tmp_path / "acc.png"
-    runs = [_run("run-1", acc=0.3), _run("run-2", acc=0.5)]
+    runs = [
+        _run("run-1", acc=0.3, model_id="pythia-70m", revision="step1000", dataset="arc_easy"),
+        _run("run-2", acc=0.4, model_id="pythia-70m", revision="main", dataset="arc_easy"),
+        _run("run-3", acc=0.5, model_id="pythia-1b", revision="main", dataset="arc_easy"),
+        _run("run-4", bpb=1.2, model_id="pythia-70m", revision="main", dataset="wikitext103"),
+        _run("run-5", bpb=0.9, model_id="pythia-1b", revision="main", dataset="wikitext103"),
+    ]
 
-    result = accuracy_bar_chart(runs, out_path)
+    result = accuracy_grid_chart(runs, out_path)
 
     assert result == out_path
     assert out_path.exists()
     assert out_path.stat().st_size > 0
 
 
-def test_accuracy_bar_chart_skips_runs_without_acc_metric(tmp_path):
+def test_accuracy_grid_chart_skips_runs_without_metric_or_unknown_model(tmp_path):
     out_path = tmp_path / "acc.png"
-    runs = [_run("run-1", acc=0.3), _run("run-2", acc=None)]
+    runs = [
+        _run("run-1", acc=0.3, model_id="pythia-70m", revision="main", dataset="arc_easy"),
+        _run("run-2", acc=None, model_id="pythia-70m", revision="main", dataset="hellaswag"),
+        _run("run-3", acc=0.5, model_id="dummy", revision="main", dataset="arc_easy"),
+    ]
 
-    # Must not raise despite one run lacking an "acc" key.
-    accuracy_bar_chart(runs, out_path)
+    # Must not raise despite a missing metric and an unrecognized model_id.
+    accuracy_grid_chart(runs, out_path)
+
+    assert out_path.exists()
+
+
+def test_accuracy_grid_chart_handles_no_plottable_runs(tmp_path):
+    out_path = tmp_path / "acc.png"
+    runs = [_run("run-1", acc=0.3, model_id="dummy")]
+
+    # No run has a known model_id, so no panel is plotted — must not raise.
+    accuracy_grid_chart(runs, out_path)
 
     assert out_path.exists()
 
