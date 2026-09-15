@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from ladder.cli import app
 from ladder.client import DummyClient, register
+from ladder.client import _REGISTRY as _CLIENT_REGISTRY
 from ladder.storage import connect, get_example_results, list_runs
 
 runner = CliRunner()
@@ -345,3 +346,61 @@ seed: 0
         png_path = fig_dir / name
         assert png_path.exists(), name
         assert png_path.stat().st_size > 0, name
+
+
+def test_variant_mini_sweep_then_prompt_sensitivity_figure_renders(tmp_path, monkeypatch):
+    """Sprint 4 Phase 4.4 integration test: variant mini-sweep -> DB -> prompt-sensitivity figure.
+
+    `prompt_sensitivity_chart` only plots runs whose `model_id` is a
+    recognized Pythia size (`figures.PYTHIA_PARAM_COUNTS`), so this test
+    temporarily points the real `pythia-70m`/`pythia-160m` registry entries
+    at `DummyClient` (restored after the test) rather than relaxing the
+    chart's model filter for the sake of one test — offline throughout, no
+    real HF download, but exercising the actual model_ids the figure keys on.
+    """
+    monkeypatch.setitem(_CLIENT_REGISTRY, "pythia-70m", lambda revision="main", **kw: DummyClient(revision=revision, model_id="pythia-70m", **kw))
+    monkeypatch.setitem(_CLIENT_REGISTRY, "pythia-160m", lambda revision="main", **kw: DummyClient(revision=revision, model_id="pythia-160m", **kw))
+
+    db_path = tmp_path / "ladder.db"
+    fig_dir = tmp_path / "figures"
+    spec_path = tmp_path / "prompts_mini.yaml"
+    spec_path.write_text(
+        """
+models:
+  - model_id: pythia-70m
+    revisions: [main]
+  - model_id: pythia-160m
+    revisions: [main]
+targets:
+  - dataset: arc_easy
+    variant: arc_easy/mc_letter_v1
+    evaluator: loglik_mc
+    split: fixture
+  - dataset: arc_easy
+    variant: arc_easy/mc_option_text_v1
+    evaluator: loglik_mc
+    split: fixture
+limit: 10
+seed: 0
+""",
+        encoding="utf-8",
+    )
+
+    sweep_result = runner.invoke(app, ["sweep", "run", str(spec_path), "--db", str(db_path)])
+    assert sweep_result.exit_code == 0, sweep_result.output
+    assert "Executed 4 run(s); 0 failed." in sweep_result.output
+
+    conn = connect(db_path)
+    runs = list_runs(conn)
+    assert len(runs) == 4
+    assert all(r.status == "done" for r in runs)
+
+    variant_ids = {r.prompt_variant_id for r in runs}
+    assert variant_ids == {"arc_easy/mc_letter_v1", "arc_easy/mc_option_text_v1"}
+
+    figures_result = runner.invoke(app, ["figures", "--db", str(db_path), "--out-dir", str(fig_dir)])
+    assert figures_result.exit_code == 0, figures_result.output
+
+    png_path = fig_dir / "prompt_sensitivity.png"
+    assert png_path.exists()
+    assert png_path.stat().st_size > 0

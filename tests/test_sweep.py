@@ -83,6 +83,24 @@ seed: 7
     assert spec.seed == 7
 
 
+def test_load_sweep_spec_prompts_yaml():
+    spec = load_sweep_spec("sweeps/prompts.yaml")
+    assert [m.model_id for m in spec.models] == ["pythia-70m", "pythia-160m", "pythia-410m", "pythia-1b"]
+    assert all(m.revisions == ["main"] for m in spec.models)
+
+    runs = expand_sweep(spec)
+    assert len(runs) == 20  # 4 models x 5 targets, final checkpoint only
+
+    variant_ids = {r.variant for r in runs}
+    assert variant_ids == {
+        "arc_easy/mc_letter_v1",
+        "arc_easy/mc_option_text_v1",
+        "arc_easy/mc_letter_instr_v1",
+        "mmlu/mc_letter_v1",
+        "mmlu/mc_option_text_v1",
+    }
+
+
 def test_run_sweep_executes_all_runs_and_marks_them_done(tmp_path):
     conn = connect(tmp_path / "ladder.db")
     executed = run_sweep(conn, _SPEC)

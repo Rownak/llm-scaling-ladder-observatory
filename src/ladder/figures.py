@@ -423,6 +423,165 @@ def headline_figure(runs: list[RunRecord], out_path: str | Path) -> Path:
     return out_path
 
 
+# Fixed variant -> marker assignment for prompt_sensitivity_chart, so the
+# same variant reads with the same marker shape across every benchmark panel
+# (color already encodes benchmark via `_color_for_dataset`, matching the
+# rest of this module's "color = benchmark" convention).
+_VARIANT_MARKERS = {
+    "arc_easy/mc_letter_v1": "o",
+    "arc_easy/mc_option_text_v1": "s",
+    "arc_easy/mc_letter_instr_v1": "^",
+    "arc_easy/mc_letter_5shot_v1": "D",
+    "mmlu/mc_letter_v1": "o",
+    "mmlu/mc_option_text_v1": "s",
+}
+_FALLBACK_VARIANT_MARKER_CYCLE = ["v", "P", "X", "*", "h"]
+
+
+def _marker_for_variant(variant_id: str, seen: dict[str, str]) -> str:
+    """Look up (or deterministically assign) a plot marker for `variant_id`.
+
+    Args:
+        variant_id: Prompt variant id (`RunRecord.prompt_variant_id`).
+        seen: Mutable variant_id -> marker cache shared across one chart's
+            calls, so an unrecognized variant gets a stable marker for the
+            life of that figure instead of a fresh one per line.
+
+    Returns:
+        A matplotlib marker string. Known variants (`_VARIANT_MARKERS`) get a
+        fixed marker; anything else is assigned the next unused marker from
+        `_FALLBACK_VARIANT_MARKER_CYCLE`, in first-seen order.
+    """
+    if variant_id in _VARIANT_MARKERS:
+        return _VARIANT_MARKERS[variant_id]
+    if variant_id not in seen:
+        seen[variant_id] = _FALLBACK_VARIANT_MARKER_CYCLE[len(seen) % len(_FALLBACK_VARIANT_MARKER_CYCLE)]
+    return seen[variant_id]
+
+
+# Variant whose acc_norm is also plotted (as a hollow marker) alongside acc,
+# per benchmark (sprints/sprint4.md Phase 4.4 — "both acc and acc_norm views
+# for the option-text variant"). acc_norm only diverges from acc for
+# option_text continuations (loglik normalized by continuation byte length
+# matters once continuations have different lengths; bare letters are all
+# the same length, so acc_norm == acc there and isn't worth a second marker).
+_ACC_NORM_VARIANT_SUFFIX = "mc_option_text_v1"
+
+
+def prompt_sensitivity_chart(runs: list[RunRecord], out_path: str | Path) -> Path:
+    """Render the prompt-sensitivity dot plot: accuracy per model, split out by prompt variant.
+
+    Sprint 4's headline figure (sprints/sprint4.md Phase 4.4, architecture.md
+    §10): one panel per MC benchmark that has more than one prompt variant in
+    `runs`, x-axis log10(param count), y-axis accuracy, one marker per variant
+    (color = benchmark, matching this module's convention; marker shape =
+    variant, `_marker_for_variant`). Same models, same underlying data —
+    only the prompt format changes between markers within a panel, isolating
+    how much of the accuracy spread is measurement artifact rather than model
+    capability.
+
+    For the `*/mc_option_text_v1` variant specifically, `acc_norm` is plotted
+    too (hollow marker, same color/shape) alongside `acc` — this needs no new
+    storage path, since `acc_norm` is already a first-class key in
+    `RunRecord.metrics` for every `loglik_mc` run (architecture.md §10 Phase
+    4.4 note).
+
+    Args:
+        runs: `RunRecord`s to plot. Only `status == "done"` runs whose
+            `model_id` is in `PYTHIA_PARAM_COUNTS`, whose `revision` resolves
+            to the final checkpoint, whose `evaluator == "loglik_mc"`, and
+            whose `prompt_variant_id` is set are considered. A benchmark gets
+            a panel only if at least 2 distinct variants have plottable runs
+            for it; benchmarks with only one variant swept aren't a
+            sensitivity comparison and are skipped.
+        out_path: Destination PNG path.
+
+    Returns:
+        `out_path`, coerced to a `Path`.
+
+    Side Effects:
+        Writes a PNG file to `out_path`, overwriting any existing file.
+    """
+    out_path = Path(out_path)
+
+    # dataset -> variant_id -> list of (log10_params, acc).
+    acc_series: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    # dataset -> variant_id -> list of (log10_params, acc_norm), option_text only.
+    acc_norm_series: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    for r in runs:
+        if r.status != "done" or r.evaluator != "loglik_mc" or r.prompt_variant_id is None:
+            continue
+        n_params = PYTHIA_PARAM_COUNTS.get(r.model_id)
+        if n_params is None:
+            continue
+        if _revision_to_step(r.revision) != _FINAL_STEP:
+            continue
+        if "acc" not in r.metrics:
+            continue
+        log_params = math.log10(n_params)
+        acc_series.setdefault(r.dataset, {}).setdefault(r.prompt_variant_id, []).append(
+            (log_params, r.metrics["acc"])
+        )
+        if r.prompt_variant_id.endswith(_ACC_NORM_VARIANT_SUFFIX) and "acc_norm" in r.metrics:
+            acc_norm_series.setdefault(r.dataset, {}).setdefault(r.prompt_variant_id, []).append(
+                (log_params, r.metrics["acc_norm"])
+            )
+
+    dataset_order = sorted(d for d, variants in acc_series.items() if len(variants) >= 2)
+
+    n = len(dataset_order)
+    ncols = 2 if n > 1 else 1
+    nrows = max(1, math.ceil(n / ncols)) if n else 1
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4.5 * nrows), squeeze=False)
+    flat_axes = [axes[i // ncols][i % ncols] for i in range(nrows * ncols)]
+
+    seen_markers: dict[str, str] = {}
+    for idx, dataset in enumerate(dataset_order):
+        ax = flat_axes[idx]
+        color = _DATASET_COLORS.get(dataset, "tab:blue")
+        for variant_id in sorted(acc_series[dataset]):
+            points = sorted(acc_series[dataset][variant_id])
+            xs, ys = zip(*points)
+            ax.plot(
+                xs,
+                ys,
+                marker=_marker_for_variant(variant_id, seen_markers),
+                linestyle="-",
+                color=color,
+                label=variant_id,
+            )
+        for variant_id in sorted(acc_norm_series.get(dataset, {})):
+            points = sorted(acc_norm_series[dataset][variant_id])
+            xs, ys = zip(*points)
+            ax.plot(
+                xs,
+                ys,
+                marker=_marker_for_variant(variant_id, seen_markers),
+                linestyle="--",
+                markerfacecolor="none",
+                color=color,
+                label=f"{variant_id} (acc_norm)",
+            )
+        if dataset in _CHANCE_RATE:
+            ax.axhline(_CHANCE_RATE[dataset], linestyle=":", linewidth=1, color="black", alpha=0.5)
+
+        ax.set_xlabel("log10(parameters)")
+        ax.set_ylabel("accuracy")
+        ax.set_ylim(0, 1)
+        ax.set_title(dataset, fontsize="medium")
+        ax.legend(fontsize="x-small")
+
+    for idx in range(n, nrows * ncols):
+        flat_axes[idx].axis("off")
+
+    fig.suptitle("Prompt sensitivity: accuracy per model, by prompt variant")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+    return out_path
+
+
 def trajectory_chart(runs: list[RunRecord], out_path: str | Path, metric: str = "acc") -> Path:
     """Render `metric` vs. training step, one line per (model, dataset) pair.
 

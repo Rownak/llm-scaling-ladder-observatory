@@ -114,6 +114,86 @@ def test_render_golden_mmlu_first_fixture_example():
     assert request.gen_params is None
 
 
+def test_render_golden_arc_easy_option_text_v1():
+    loader = get_loader("arc_easy")
+    example = next(loader.load("fixture", limit=1))
+    variant = load_variant("arc_easy/mc_option_text_v1")
+
+    request = render(example, variant)
+
+    expected_prompt = (
+        "Question: Which statement best explains why photosynthesis is the "
+        "foundation of most food webs?\n"
+        "A. Sunlight is the source of energy for nearly all ecosystems.\n"
+        "B. Most ecosystems are found on land instead of in water.\n"
+        "C. Carbon dioxide is more available than other gases.\n"
+        "D. The producers in all ecosystems are plants.\n"
+        "Answer:\n"
+    )
+    assert request.prompt == expected_prompt
+    assert request.prompt_variant_id == "arc_easy/mc_option_text_v1"
+    assert request.kind == "loglik"
+    assert request.continuations == [
+        " Sunlight is the source of energy for nearly all ecosystems.",
+        " Most ecosystems are found on land instead of in water.",
+        " Carbon dioxide is more available than other gases.",
+        " The producers in all ecosystems are plants.",
+    ]
+    assert request.gen_params is None
+
+
+def test_render_golden_arc_easy_letter_instr_v1():
+    loader = get_loader("arc_easy")
+    example = next(loader.load("fixture", limit=1))
+    variant = load_variant("arc_easy/mc_letter_instr_v1")
+
+    request = render(example, variant)
+
+    expected_prompt = (
+        "Answer the following multiple choice question by choosing the letter "
+        "of the correct option.\n"
+        "Question: Which statement best explains why photosynthesis is the "
+        "foundation of most food webs?\n"
+        "A. Sunlight is the source of energy for nearly all ecosystems.\n"
+        "B. Most ecosystems are found on land instead of in water.\n"
+        "C. Carbon dioxide is more available than other gases.\n"
+        "D. The producers in all ecosystems are plants.\n"
+        "Answer:\n"
+    )
+    assert request.prompt == expected_prompt
+    assert request.prompt_variant_id == "arc_easy/mc_letter_instr_v1"
+    assert request.kind == "loglik"
+    assert request.continuations == [" A", " B", " C", " D"]
+    assert request.gen_params is None
+
+
+def test_render_golden_mmlu_option_text_v1():
+    loader = get_loader("mmlu")
+    example = next(loader.load("fixture", limit=1))
+    variant = load_variant("mmlu/mc_option_text_v1")
+
+    request = render(example, variant)
+
+    expected_prompt = (
+        'Question: What is true for a type-Ia ("type one-a") supernova?\n'
+        "A. This type occurs in binary systems.\n"
+        "B. This type occurs in young galaxies.\n"
+        "C. This type produces gamma-ray bursts.\n"
+        "D. This type produces high amounts of X-rays.\n"
+        "Answer:\n"
+    )
+    assert request.prompt == expected_prompt
+    assert request.prompt_variant_id == "mmlu/mc_option_text_v1"
+    assert request.kind == "loglik"
+    assert request.continuations == [
+        " This type occurs in binary systems.",
+        " This type occurs in young galaxies.",
+        " This type produces gamma-ray bursts.",
+        " This type produces high amounts of X-rays.",
+    ]
+    assert request.gen_params is None
+
+
 def test_load_variant_lambada_cloze_v1():
     variant = load_variant("lambada/cloze_v1")
     assert variant.id == "lambada/cloze_v1"
